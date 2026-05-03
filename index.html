@@ -109,6 +109,23 @@
     .empty-state a { color: var(--primary); }
 
     .no-webauthn { background: rgba(224,80,80,0.1); border: 1px solid rgba(224,80,80,0.3); border-radius: var(--radius); padding: 14px 16px; font-size: 13px; color: var(--danger); margin-bottom: 20px; }
+
+    .section-actions { display:flex; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
+    .contact-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:10px; }
+    .contact-card.quarantined { border-color:rgba(224,80,80,0.4); background:rgba(224,80,80,0.05); }
+    .contact-card-header { display:flex; gap:12px; align-items:flex-start; margin-bottom:12px; }
+    .contact-meta { flex:1; min-width:0; }
+    .contact-name { font-size:14px; font-weight:600; }
+    .contact-detail { font-size:11px; color:var(--text-muted); margin-top:2px; }
+    .contact-actions { display:flex; gap:8px; flex-wrap:wrap; }
+    .contact-actions button { font-size:11px; padding:5px 10px; }
+    .quarantine-label { font-size:11px; color:var(--danger); margin-top:4px; }
+    .modal-overlay { position:fixed; inset:0; z-index:200; align-items:center; justify-content:center; }
+    .modal-backdrop { position:absolute; inset:0; background:rgba(0,0,0,0.75); }
+    .modal-box { position:relative; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; max-width:340px; width:92%; text-align:center; box-shadow:var(--shadow); }
+    .modal-box h3 { margin-bottom:8px; font-size:15px; }
+    .modal-box p { font-size:12px; color:var(--text-muted); margin-bottom:16px; line-height:1.5; }
+    .modal-box canvas { display:block; margin:0 auto 16px; border-radius:4px; }
   </style>
 </head>
 <body>
@@ -116,6 +133,7 @@
   <div class="brand">SSD</div>
   <nav>
     <button class="nav-btn active" data-section="keyring" onclick="ui.showSection('keyring')">Keyring</button>
+    <button class="nav-btn" data-section="contacts" onclick="ui.showSection('contacts')">Contacts</button>
     <button class="nav-btn" data-section="newKey" onclick="ui.showSection('newKey')">+ New Key</button>
     <button class="nav-btn" data-section="compose" onclick="ui.showSection('compose')">Sign</button>
     <button class="nav-btn" data-section="verify" onclick="ui.showSection('verify')">Verify</button>
@@ -215,16 +233,68 @@
     </div>
   </section>
 
+  <!-- CONTACTS -->
+  <section id="contacts" class="section">
+    <h2>Contacts</h2>
+    <div class="section-actions">
+      <button onclick="app.showPasteImport()">+ Import key card</button>
+      <button class="btn-secondary" onclick="app.startQRScan()">Scan QR</button>
+    </div>
+    <div id="paste-import-area" style="display:none;margin-top:16px">
+      <div class="form-group">
+        <label>Paste key card JSON</label>
+        <textarea id="paste-import-text" style="min-height:100px;font-size:12px" placeholder='{"version":"1.0","name":"Alice",...}'></textarea>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="app.doImportPaste()">Import</button>
+        <a href="#" class="cancel-link" onclick="app.hidePasteImport();return false">Cancel</a>
+      </div>
+    </div>
+    <div id="contacts-list" style="margin-top:20px"></div>
+    <div id="quarantine-toggle-bar" style="display:none;margin-top:28px">
+      <button class="btn-secondary" id="quarantine-toggle-btn" onclick="app.toggleQuarantine()">Show quarantined keys</button>
+    </div>
+    <div id="quarantine-list" style="display:none;margin-top:12px"></div>
+  </section>
+
+  <!-- QR DISPLAY MODAL -->
+  <div id="qr-modal" class="modal-overlay" style="display:none">
+    <div class="modal-backdrop" onclick="app.closeQRModal()"></div>
+    <div class="modal-box">
+      <h3 id="qr-modal-title"></h3>
+      <p id="qr-modal-desc"></p>
+      <canvas id="qr-canvas"></canvas>
+      <div id="qr-wrong-btn-wrap" style="display:none;margin-bottom:12px">
+        <button class="btn-danger" id="qr-wrong-btn">That's not my key</button>
+      </div>
+      <button class="btn-secondary" onclick="app.closeQRModal()">Close</button>
+    </div>
+  </div>
+
+  <!-- QR SCAN MODAL -->
+  <div id="scan-modal" class="modal-overlay" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="modal-box">
+      <h3>Scan Key Card</h3>
+      <p id="scan-status">Point your camera at a key card QR code.</p>
+      <video id="scan-video" autoplay playsinline style="width:100%;border-radius:4px;margin:12px 0;background:#000"></video>
+      <canvas id="scan-canvas" style="display:none"></canvas>
+      <button class="btn-secondary" onclick="app.stopQRScan()">Cancel</button>
+    </div>
+  </div>
+
   <div id="results"></div>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v2';
+const APP_VERSION = 'ssd-v3';
 
 // ─── DB ───────────────────────────────────────────────────────────────────────
 const db = {
@@ -366,6 +436,15 @@ const cryptoOps = {
     );
     return this.b64enc(pt);
   },
+  async generateX25519Keypair() {
+    return window.crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveKey', 'deriveBits']);
+  },
+  async exportX25519PublicKeyB64(key) {
+    return this.b64enc(await window.crypto.subtle.exportKey('raw', key));
+  },
+  async exportX25519PrivateKeyB64(key) {
+    return this.b64enc(await window.crypto.subtle.exportKey('pkcs8', key));
+  },
 };
 
 // ─── PASSKEY ─────────────────────────────────────────────────────────────────
@@ -495,11 +574,22 @@ const keyring = {
     const fingerprint = await cryptoOps.fingerprint(pubB64);
     const existing = await db.getAll('my_keys');
     const id = window.crypto.randomUUID();
+    let encPubB64 = null, encPrivEncrypted = null, encPrivIv = null;
+    try {
+      const x25519 = await cryptoOps.generateX25519Keypair();
+      encPubB64 = await cryptoOps.exportX25519PublicKeyB64(x25519.publicKey);
+      const encPrivB64 = await cryptoOps.exportX25519PrivateKeyB64(x25519.privateKey);
+      const enc = await cryptoOps.encryptPrivateKey(encPrivB64, this._sessionKey);
+      encPrivEncrypted = enc.ciphertext_b64; encPrivIv = enc.iv_b64;
+    } catch { /* X25519 not supported */ }
     const record = {
       id, name, fingerprint,
       public_key_b64: pubB64,
       private_key_encrypted: ciphertext_b64,
       private_key_iv: iv_b64,
+      encryption_public_key_b64: encPubB64,
+      encryption_private_key_encrypted: encPrivEncrypted,
+      encryption_private_key_iv: encPrivIv,
       identicon_algorithm: 'ssd-identicon-1.0',
       self_image_b64: null,
       created: new Date().toISOString(),
@@ -524,6 +614,7 @@ const keyring = {
     if (!rec) throw new Error('Key not found.');
     const cardData = {
       chain: [],
+      encryption_key: rec.encryption_public_key_b64 || null,
       expires: rec.expires,
       fingerprint: rec.fingerprint,
       identicon_algorithm: rec.identicon_algorithm,
@@ -649,6 +740,13 @@ const artifact = {
 
     result.signer_name = signerRec.name;
     result.signer_known = true;
+    if (signerRec.is_quarantined) {
+      const via = signerRec.received_via || 'unknown source';
+      const when = signerRec.received_at ? new Date(signerRec.received_at).toLocaleDateString() : 'unknown date';
+      result.errors.push(`This key has been quarantined (received via ${via} on ${when}). Documents signed with it cannot be trusted.`);
+      result.key_revoked = true;
+      return result;
+    }
     result.trust_types = myKeys.find(k => k.id === signerRec.id) ? ['self'] : [signerRec.trust_type || 'peer'];
 
     // Verify Ed25519 signature over manifest bytes
@@ -736,9 +834,10 @@ const ui = {
     const btn = document.querySelector(`[data-section="${id}"]`);
     if (btn) btn.classList.add('active');
     this.clear();
-    if (id === 'keyring')  app.loadKeyring();
-    if (id === 'compose')  app.loadComposeKeys();
-    if (id === 'settings') app.checkPasskeyStatus();
+    if (id === 'keyring')   app.loadKeyring();
+    if (id === 'contacts')  app.loadContacts();
+    if (id === 'compose')   app.loadComposeKeys();
+    if (id === 'settings')  app.checkPasskeyStatus();
   },
   display(html) {
     const r = document.getElementById('results');
@@ -772,6 +871,8 @@ const ui = {
 // ─── APP ─────────────────────────────────────────────────────────────────────
 const app = {
   _sigCtx: null,
+  _scanStream: null,
+  _scanInterval: null,
 
   async init() {
     if ('serviceWorker' in navigator) {
@@ -831,6 +932,7 @@ const app = {
       <div class="key-card-actions">
         <button onclick="app.doExportKeyCard('${rec.id}')">Export Key Card</button>
         <button class="btn-secondary" onclick="app.startSign('${rec.id}')">Sign Document</button>
+        <button class="btn-secondary" onclick="app.showKeyCardQR('${rec.id}')">Show QR</button>
       </div>`;
     return div;
   },
@@ -1071,6 +1173,277 @@ const app = {
     const replaceUI  = document.getElementById('passkey-replace-ui');
     if (registerUI) registerUI.style.display = cred ? 'none' : '';
     if (replaceUI)  replaceUI.style.display  = cred ? ''     : 'none';
+  },
+
+  async loadContacts() {
+    const all = await db.getAll('contact_keys');
+    const active = all.filter(c => !c.is_quarantined);
+    const quarantined = all.filter(c => c.is_quarantined);
+    const list = document.getElementById('contacts-list');
+    if (!list) return;
+    if (active.length === 0) {
+      list.innerHTML = '<div class="empty-state"><p>No contacts yet.</p><p style="margin-top:8px">Import a key card to add someone.</p></div>';
+    } else {
+      list.innerHTML = '';
+      for (const c of active) list.appendChild(await this._buildContactCard(c));
+    }
+    const toggleBar = document.getElementById('quarantine-toggle-bar');
+    if (toggleBar) toggleBar.style.display = quarantined.length > 0 ? '' : 'none';
+    const qList = document.getElementById('quarantine-list');
+    if (qList && qList.style.display !== 'none') {
+      qList.innerHTML = '';
+      for (const c of quarantined) qList.appendChild(await this._buildContactCard(c, true));
+    }
+  },
+
+  async _buildContactCard(rec, isQuarantined = false) {
+    const div = document.createElement('div');
+    div.className = 'contact-card' + (isQuarantined ? ' quarantined' : '');
+    const seed = await cryptoOps.identiconSeed(rec.public_key_b64);
+    const imgSrc = identicon.renderToDataURL(seed, 48);
+    const via = { qr_scan: 'Scanned via QR', paste: 'Pasted', file: 'File import', manual: 'Manual', well_known: 'Web lookup' }[rec.received_via] || rec.received_via || 'Unknown';
+    const when = rec.received_at ? new Date(rec.received_at).toLocaleDateString() : '';
+    const quarantineHtml = isQuarantined
+      ? `<div class="quarantine-label">⚠ Quarantined${rec.quarantine_reason ? ' — ' + rec.quarantine_reason : ''}${rec.quarantined_at ? ' · ' + new Date(rec.quarantined_at).toLocaleDateString() : ''}</div>`
+      : '';
+    const actions = isQuarantined
+      ? `<button class="btn-secondary" onclick="app.showQuarantineDetail('${rec.id}')">View detail</button>
+         <button class="btn-danger" onclick="app.deleteContact('${rec.id}')">Delete</button>`
+      : `<button class="btn-secondary" onclick="app.showContactKeyQR('${rec.id}')">Verify key</button>
+         <button class="btn-secondary" onclick="app.deleteContact('${rec.id}')">Remove</button>`;
+    div.innerHTML = `
+      <div class="contact-card-header">
+        <img src="${imgSrc}" width="48" height="48" class="identicon" alt="">
+        <div class="contact-meta">
+          <div class="contact-name">${rec.name}</div>
+          <div class="contact-detail mono">${rec.fingerprint}</div>
+          <div class="contact-detail">${via}${when ? ' · ' + when : ''}</div>
+          ${quarantineHtml}
+        </div>
+      </div>
+      <div class="contact-actions">${actions}</div>`;
+    return div;
+  },
+
+  showPasteImport() {
+    const el = document.getElementById('paste-import-area');
+    if (el) { el.style.display = ''; document.getElementById('paste-import-text').focus(); }
+  },
+
+  hidePasteImport() {
+    const el = document.getElementById('paste-import-area');
+    if (el) { el.style.display = 'none'; document.getElementById('paste-import-text').value = ''; }
+  },
+
+  async doImportPaste() {
+    const text = document.getElementById('paste-import-text').value.trim();
+    if (!text) { ui.display('<span class="warn">Paste a key card first.</span>'); return; }
+    let card;
+    try { card = JSON.parse(text); } catch { ui.display('<span class="fail">Not valid JSON.</span>'); return; }
+    await this.importContactCard(card, 'paste');
+  },
+
+  async importContactCard(card, receivedVia = 'paste') {
+    ui.clear();
+    if (!card.public_key || !card.fingerprint || !card.self_signed || !card.name) {
+      ui.display('<span class="fail">Invalid key card — missing required fields.</span>'); return;
+    }
+    const valid = await keyring.verifyKeyCard(card);
+    if (!valid) {
+      ui.display('<span class="fail">Key card signature is invalid — this may have been tampered with.</span>'); return;
+    }
+    const fp = await cryptoOps.fingerprint(card.public_key);
+    if (fp !== card.fingerprint) {
+      ui.display('<span class="fail">Fingerprint does not match the public key — corrupt key card.</span>'); return;
+    }
+    const existing = (await db.getAll('contact_keys')).find(c => c.fingerprint === card.fingerprint);
+    if (existing) {
+      ui.display(`<span class="warn">A key with fingerprint ${card.fingerprint} is already in your contacts (${existing.name}).</span>`); return;
+    }
+    const myKeys = await db.getAll('my_keys');
+    if (myKeys.find(k => k.fingerprint === card.fingerprint)) {
+      ui.display('<span class="warn">This is one of your own keys.</span>'); return;
+    }
+    await db.put('contact_keys', {
+      id: window.crypto.randomUUID(), name: card.name, fingerprint: card.fingerprint,
+      public_key_b64: card.public_key, encryption_key_b64: card.encryption_key || null,
+      identicon_algorithm: card.identicon_algorithm || 'ssd-identicon-1.0',
+      self_image_b64: card.self_image || null, received_via: receivedVia,
+      received_at: new Date().toISOString(), expires: card.expires || null,
+      recheck_interval_days: card.recheck_interval_days || 90,
+      last_checked: new Date().toISOString(), revocation_hint: card.revocation_hint || null,
+      trust_type: 'peer', local_label: null, local_identicon_algorithm: null,
+      countersignatures: [], is_revoked: false, is_quarantined: false,
+      quarantined_at: null, quarantine_reason: null,
+    });
+    this.hidePasteImport();
+    ui.display(`<div class="ok">✓ Added: <strong>${card.name}</strong> [<span class="mono">${card.fingerprint}</span>]</div>`);
+    await this.loadContacts();
+  },
+
+  async showKeyCardQR(keyId) {
+    try {
+      await keyring.ensureUnlocked();
+      const card = await keyring.exportKeyCard(keyId);
+      await this._showQRModal('Your key card', `Share this so contacts can verify your identity. Fingerprint: ${card.fingerprint}`, JSON.stringify(card), null);
+    } catch(e) {
+      ui.display(`<span class="fail">Could not generate QR: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  async showContactKeyQR(contactId) {
+    const rec = await db.get('contact_keys', contactId);
+    if (!rec) return;
+    const payload = JSON.stringify({ fingerprint: rec.fingerprint, name: rec.name, public_key: rec.public_key_b64, encryption_key: rec.encryption_key_b64 || null });
+    await this._showQRModal(
+      `Verify: ${rec.name}`,
+      `Show this to ${rec.name} and ask if it matches their key. If they say no, tap "That's not my key".`,
+      payload, contactId
+    );
+  },
+
+  async _showQRModal(title, desc, data, contactId) {
+    document.getElementById('qr-modal-title').textContent = title;
+    document.getElementById('qr-modal-desc').textContent = desc;
+    const wrongWrap = document.getElementById('qr-wrong-btn-wrap');
+    const wrongBtn  = document.getElementById('qr-wrong-btn');
+    if (wrongWrap && wrongBtn) {
+      if (contactId) {
+        wrongWrap.style.display = '';
+        wrongBtn.onclick = () => { app.closeQRModal(); app.promptQuarantine(contactId); };
+      } else {
+        wrongWrap.style.display = 'none';
+      }
+    }
+    const canvas = document.getElementById('qr-canvas');
+    try {
+      await QRCode.toCanvas(canvas, data, { width: 256, margin: 2, color: { dark: '#000000', light: '#ffffff' } });
+    } catch(e) {
+      ui.display(`<span class="fail">QR generation failed: ${e.message}</span>`); return;
+    }
+    document.getElementById('qr-modal').style.display = 'flex';
+  },
+
+  closeQRModal() {
+    document.getElementById('qr-modal').style.display = 'none';
+  },
+
+  async promptQuarantine(contactId) {
+    const rec = await db.get('contact_keys', contactId);
+    if (!rec) return;
+    if (!confirm(`Move ${rec.name} [${rec.fingerprint}] to quarantine?\n\nThis key will no longer be trusted. The record is kept so you can trace where it came from.`)) return;
+    await this.quarantineContact(contactId, 'verification failed — key not recognised by owner');
+  },
+
+  async quarantineContact(contactId, reason) {
+    const rec = await db.get('contact_keys', contactId);
+    if (!rec) return;
+    await db.put('contact_keys', { ...rec, is_quarantined: true, quarantined_at: new Date().toISOString(), quarantine_reason: reason });
+    const artifacts = await db.getAll('artifacts');
+    const affected = artifacts.filter(a => a.signed_by_key_id === contactId || a.fingerprint === rec.fingerprint);
+    ui.clear();
+    let msg = `<div class="ok">Key moved to quarantine.</div>`;
+    if (affected.length > 0) {
+      msg += `<div class="warn" style="margin-top:10px">⚠ ${affected.length} document${affected.length !== 1 ? 's' : ''} previously verified with this key are now suspect:</div>`;
+      msg += '<ul style="font-size:12px;margin-top:6px;padding-left:20px;color:var(--warning)">';
+      for (const a of affected.slice(0, 10)) msg += `<li>${new Date(a.created).toLocaleDateString()} — ${a.summary || '(no summary)'}</li>`;
+      if (affected.length > 10) msg += `<li>…and ${affected.length - 10} more</li>`;
+      msg += '</ul>';
+    }
+    msg += `<div style="margin-top:10px;font-size:12px;color:var(--text-muted)">Provenance: received ${rec.received_via || 'via unknown method'} on ${rec.received_at ? new Date(rec.received_at).toLocaleDateString() : 'unknown date'}. Keep this record if you are investigating.</div>`;
+    ui.display(msg);
+    ui.showSection('contacts');
+  },
+
+  async showQuarantineDetail(contactId) {
+    const rec = await db.get('contact_keys', contactId);
+    if (!rec) return;
+    const artifacts = await db.getAll('artifacts');
+    const affected = artifacts.filter(a => a.signed_by_key_id === contactId || a.fingerprint === rec.fingerprint);
+    ui.clear();
+    let msg = `<div class="verify-result">`;
+    msg += `<div><strong>${rec.name}</strong> · <span class="mono">${rec.fingerprint}</span></div>`;
+    msg += `<div class="fail" style="margin-top:6px">⚠ ${rec.quarantine_reason || 'Flagged as suspect'}</div>`;
+    msg += `<div style="margin-top:10px"><strong>How this key reached you</strong></div>`;
+    const via = { qr_scan: 'QR scan', paste: 'Paste', file: 'File import' }[rec.received_via] || rec.received_via || 'Unknown';
+    msg += `<div class="info">${via} · ${rec.received_at ? new Date(rec.received_at).toLocaleString() : 'unknown'}</div>`;
+    if (affected.length > 0) {
+      msg += `<div style="margin-top:10px"><strong>Documents verified with this key</strong></div>`;
+      for (const a of affected) msg += `<div style="font-size:12px;color:var(--warning);margin-top:4px">⚠ ${new Date(a.created).toLocaleDateString()} — ${a.summary || '(no summary)'}</div>`;
+    } else {
+      msg += `<div class="info" style="margin-top:8px;font-size:12px">No documents were verified using this key.</div>`;
+    }
+    msg += `</div>`;
+    ui.display(msg);
+  },
+
+  async deleteContact(contactId) {
+    const rec = await db.get('contact_keys', contactId);
+    if (!rec) return;
+    if (!confirm(`Permanently delete ${rec.name} [${rec.fingerprint}]? This cannot be undone.`)) return;
+    await db.del('contact_keys', contactId);
+    ui.clear();
+    ui.display('<div class="ok">Contact removed.</div>');
+    await this.loadContacts();
+  },
+
+  toggleQuarantine() {
+    const list = document.getElementById('quarantine-list');
+    const btn  = document.getElementById('quarantine-toggle-btn');
+    if (!list || !btn) return;
+    const showing = list.style.display !== 'none';
+    list.style.display = showing ? 'none' : '';
+    btn.textContent = showing ? 'Show quarantined keys' : 'Hide quarantined keys';
+    if (!showing) this.loadContacts();
+  },
+
+  async startQRScan() {
+    const modal  = document.getElementById('scan-modal');
+    const video  = document.getElementById('scan-video');
+    const status = document.getElementById('scan-status');
+    if (!modal || !video) return;
+    modal.style.display = 'flex';
+    status.textContent = 'Requesting camera…';
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      video.srcObject = stream;
+      this._scanStream = stream;
+      status.textContent = 'Point at a key card QR code…';
+      this._scanInterval = setInterval(() => this._scanFrame(), 200);
+    } catch(e) {
+      status.textContent = 'Camera not available: ' + e.message;
+    }
+  },
+
+  _scanFrame() {
+    const video  = document.getElementById('scan-video');
+    const canvas = document.getElementById('scan-canvas');
+    if (!video || !canvas || video.readyState < 2) return;
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0);
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = jsQR(img.data, img.width, img.height);
+    if (code) { this.stopQRScan(); this._handleScannedQR(code.data); }
+  },
+
+  stopQRScan() {
+    if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
+    if (this._scanStream)   { this._scanStream.getTracks().forEach(t => t.stop()); this._scanStream = null; }
+    const modal = document.getElementById('scan-modal');
+    if (modal) modal.style.display = 'none';
+  },
+
+  async _handleScannedQR(data) {
+    let card;
+    try { card = JSON.parse(data); } catch {
+      ui.showSection('contacts');
+      ui.display('<span class="fail">QR code is not a valid key card.</span>');
+      return;
+    }
+    ui.showSection('contacts');
+    await this.importContactCard(card, 'qr_scan');
   },
 };
 

@@ -1,5 +1,5 @@
 // Must match APP_VERSION in index.html
-const CACHE_NAME = 'ssd-v2';
+const CACHE_NAME = 'ssd-v3';
 const SHELL = [
   './',
   './index.html',
@@ -12,6 +12,8 @@ const SHELL = [
 const CDN_ORIGINS = ['https://cdn.jsdelivr.net'];
 const CDN_PRECACHE = [
   'https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js',
+  'https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js',
+  'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js',
 ];
 
 self.addEventListener('install', event => {
