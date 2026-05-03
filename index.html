@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signed, Sealed, Delivered</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#0a0a0a">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0a0a0a;
+      --surface: #141414;
+      --surface-2: #1e1e1e;
+      --text: #e8e8e8;
+      --text-muted: #666;
+      --border: #2a2a2a;
+      --primary: #c8a96e;
+      --primary-hover: #b8935a;
+      --success: #4caf77;
+      --warning: #e8a020;
+      --danger: #e05050;
+      --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --shadow: 0 2px 12px rgba(0,0,0,0.4);
+      --radius: 6px;
+    }
+    html, body { height: 100%; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.5; }
+
+    header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; align-items: center; gap: 20px; position: sticky; top: 0; z-index: 100; }
+    .brand { font-size: 15px; font-weight: 700; color: var(--primary); letter-spacing: 0.12em; padding: 14px 0; white-space: nowrap; }
+    nav { display: flex; gap: 2px; flex-wrap: wrap; }
+    .nav-btn { background: none; border: none; color: var(--text-muted); padding: 10px 14px; cursor: pointer; border-radius: var(--radius); font-size: 13px; transition: color 0.15s, background 0.15s; }
+    .nav-btn:hover { color: var(--text); background: var(--surface-2); }
+    .nav-btn.active { color: var(--primary); }
+
+    main { max-width: 780px; margin: 0 auto; padding: 28px 20px 60px; }
+    .section { display: none; }
+    .section.active { display: block; }
+    h2 { font-size: 17px; font-weight: 600; margin-bottom: 20px; }
+    h3 { font-size: 14px; font-weight: 600; margin-bottom: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.07em; }
+
+    .form-group { margin-bottom: 16px; }
+    label { display: block; font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+    input[type=text], textarea, select {
+      width: 100%; background: var(--surface-2); border: 1px solid var(--border);
+      color: var(--text); padding: 10px 12px; border-radius: var(--radius); font-size: 14px; font-family: inherit;
+    }
+    input[type=text]:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary); }
+    textarea { min-height: 220px; resize: vertical; font-family: var(--mono); font-size: 13px; }
+    select option { background: var(--surface-2); }
+    input[type=file] { color: var(--text-muted); font-size: 13px; }
+
+    button { background: var(--primary); color: #0a0a0a; border: none; padding: 10px 20px; border-radius: var(--radius); cursor: pointer; font-size: 13px; font-weight: 600; transition: background 0.15s; }
+    button:hover { background: var(--primary-hover); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-large { padding: 14px 36px; font-size: 15px; }
+    .btn-secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { background: #c84040; }
+
+    .key-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+    .key-card-header { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
+    .identicon { border-radius: 4px; image-rendering: pixelated; flex-shrink: 0; }
+    .key-card-meta { flex: 1; min-width: 0; }
+    .key-name { font-size: 15px; font-weight: 600; }
+    .key-fp { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin-top: 3px; letter-spacing: 0.05em; }
+    .key-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .key-card-actions button { font-size: 12px; padding: 6px 12px; }
+
+    .badge { display: inline-block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 6px; border-radius: 3px; margin-left: 6px; background: var(--surface-2); color: var(--text-muted); border: 1px solid var(--border); vertical-align: middle; }
+    .badge-danger { background: rgba(224,80,80,0.15); color: var(--danger); border-color: rgba(224,80,80,0.4); }
+    .badge-primary { background: rgba(200,169,110,0.15); color: var(--primary); border-color: rgba(200,169,110,0.4); }
+
+    .confirm-banner { background: var(--surface); border: 1px solid var(--warning); border-radius: var(--radius); padding: 16px 20px; margin-bottom: 20px; }
+    .confirm-banner h2 { margin-bottom: 4px; }
+    .confirm-warning { color: var(--warning); font-size: 13px; }
+    .render-preview { font-family: var(--mono); font-size: 12px; background: var(--surface); border: 1px solid var(--border); padding: 20px; border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; max-height: 55vh; overflow-y: auto; margin-bottom: 24px; line-height: 1.65; color: var(--text); }
+    .confirm-actions { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .cancel-link { font-size: 12px; color: var(--text-muted); text-decoration: none; }
+    .cancel-link:hover { color: var(--text); }
+
+    .drop-zone { border: 2px dashed var(--border); border-radius: var(--radius); padding: 48px 20px; text-align: center; color: var(--text-muted); margin-top: 12px; cursor: pointer; transition: border-color 0.15s, color 0.15s; }
+    .drop-zone:hover, .drop-zone.drag-over { border-color: var(--primary); color: var(--text); }
+
+    #results { margin-top: 28px; }
+    .result-item { margin-bottom: 6px; font-size: 13px; }
+    .verify-result { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; font-size: 13px; }
+    .verify-result div { padding: 3px 0; }
+    .verify-result .render-preview { margin-top: 16px; margin-bottom: 0; }
+    .ok { color: var(--success); }
+    .fail { color: var(--danger); font-weight: 600; }
+    .warn { color: var(--warning); }
+    .info { color: var(--text-muted); }
+    .mono { font-family: var(--mono); }
+    .muted { color: var(--text-muted); font-size: 13px; }
+    a { color: var(--primary); }
+    a:hover { color: var(--primary-hover); }
+
+    .settings-block { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
+    .settings-block p { font-size: 13px; color: var(--text-muted); margin-bottom: 12px; }
+    #passkey-status { font-size: 13px; margin-bottom: 14px; padding: 8px 12px; border-radius: var(--radius); background: var(--surface-2); }
+
+    .key-card-json { font-family: var(--mono); font-size: 11px; background: var(--surface-2); border: 1px solid var(--border); padding: 14px; border-radius: var(--radius); max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; cursor: pointer; }
+    .key-card-json:hover { border-color: var(--primary); }
+
+    .empty-state { padding: 40px 0; text-align: center; color: var(--text-muted); font-size: 13px; }
+    .empty-state a { color: var(--primary); }
+
+    .no-webauthn { background: rgba(224,80,80,0.1); border: 1px solid rgba(224,80,80,0.3); border-radius: var(--radius); padding: 14px 16px; font-size: 13px; color: var(--danger); margin-bottom: 20px; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="brand">SSD</div>
+  <nav>
+    <button class="nav-btn active" data-section="keyring" onclick="ui.showSection('keyring')">Keyring</button>
+    <button class="nav-btn" data-section="newKey" onclick="ui.showSection('newKey')">+ New Key</button>
+    <button class="nav-btn" data-section="compose" onclick="ui.showSection('compose')">Sign</button>
+    <button class="nav-btn" data-section="verify" onclick="ui.showSection('verify')">Verify</button>
+    <button class="nav-btn" data-section="settings" onclick="ui.showSection('settings')">Settings</button>
+  </nav>
+</header>
+<main>
+  <!-- KEYRING -->
+  <section id="keyring" class="section active">
+    <h2>My Keys</h2>
+    <div id="keyring-list"></div>
+  </section>
+
+  <!-- NEW KEY -->
+  <section id="newKey" class="section">
+    <h2>New Key</h2>
+    <div id="newkey-webauthn-warn" style="display:none" class="no-webauthn">
+      WebAuthn is required to protect your key. Please serve this app over HTTPS or localhost.
+    </div>
+    <div class="form-group">
+      <label>Key Name</label>
+      <input id="new-key-name" type="text" placeholder="e.g. Personal, Work" maxlength="80">
+    </div>
+    <button onclick="app.createKey()">Generate Keypair</button>
+  </section>
+
+  <!-- COMPOSE -->
+  <section id="compose" class="section">
+    <h2>Sign Document</h2>
+    <div class="form-group">
+      <label>Signing Key</label>
+      <select id="compose-key-select"></select>
+    </div>
+    <div class="form-group">
+      <label>Document Text</label>
+      <textarea id="compose-text" placeholder="Enter the plain-text document to sign…"></textarea>
+    </div>
+    <button onclick="app.previewSign()">Preview &amp; Sign →</button>
+  </section>
+
+  <!-- SIGN CONFIRMATION -->
+  <section id="signConfirm" class="section">
+    <div class="confirm-banner">
+      <h2>This is exactly what you are signing.</h2>
+      <p class="confirm-warning">Once confirmed, this cannot be changed.</p>
+    </div>
+    <pre id="confirm-render" class="render-preview"></pre>
+    <div class="confirm-actions">
+      <button class="btn-large" onclick="app.confirmSign()">Confirm and Sign</button>
+      <a href="#" class="cancel-link" onclick="ui.showSection('compose');return false;">Cancel</a>
+    </div>
+  </section>
+
+  <!-- VERIFY -->
+  <section id="verify" class="section">
+    <h2>Verify Document</h2>
+    <div class="form-group">
+      <label>Select .sealed file</label>
+      <input id="verify-file" type="file" accept=".sealed" onchange="if(this.files[0])app.verifyArtifact(this.files[0])">
+    </div>
+    <div id="verify-drop" class="drop-zone"
+         ondragover="event.preventDefault();this.classList.add('drag-over')"
+         ondragleave="this.classList.remove('drag-over')"
+         ondrop="app.handleDrop(event)"
+         onclick="document.getElementById('verify-file').click()">
+      Drop a .sealed file here, or click to select
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="settings" class="section">
+    <h2>Settings</h2>
+    <div class="settings-block">
+      <h3>Passkey</h3>
+      <div id="passkey-status">Checking…</div>
+      <!-- shown when no passkey registered -->
+      <div id="passkey-register-ui">
+        <div class="form-group" style="margin-top:14px">
+          <label>Name (identifies this credential in your passkey manager)</label>
+          <input id="passkey-label" type="text" value="SSD Keyring" maxlength="60">
+        </div>
+        <button onclick="app.registerPasskey()">Register Passkey</button>
+      </div>
+      <!-- shown when passkey already registered -->
+      <div id="passkey-replace-ui" style="display:none;margin-top:14px">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">
+          Replacing your passkey will permanently destroy all signing keys stored in this browser.
+          They cannot be recovered. Only do this if you intend to start fresh.
+        </p>
+        <button class="btn-danger" onclick="app.clearPasskey()">Clear passkey and all keys…</button>
+      </div>
+    </div>
+    <div class="settings-block">
+      <h3>About</h3>
+      <p>Signed, Sealed, Delivered · Phase 1 · cache <span id="about-version" class="mono"></span></p>
+      <p style="margin-top:8px;color:var(--text-muted);font-size:13px">All cryptography runs in the browser. Nothing sensitive leaves this device.</p>
+    </div>
+  </section>
+
+  <div id="results"></div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"
+        crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+'use strict';
+
+// Must match CACHE_NAME in service-worker.js
+const APP_VERSION = 'ssd-v2';
+
+// ─── DB ───────────────────────────────────────────────────────────────────────
+const db = {
+  _db: null,
+  async init() {
+    if (this._db) return this._db;
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('ssd-keyring', 1);
+      req.onupgradeneeded = e => {
+        const idb = e.target.result;
+        for (const store of ['my_keys', 'contact_keys', 'artifacts', 'settings']) {
+          if (!idb.objectStoreNames.contains(store)) {
+            const keyPath = store === 'settings' ? 'key' : 'id';
+            idb.createObjectStore(store, { keyPath });
+          }
+        }
+      };
+      req.onsuccess = e => { this._db = e.target.result; resolve(this._db); };
+      req.onerror = e => reject(e.target.error);
+    });
+  },
+  async _tx(store, mode, fn) {
+    const idb = await this.init();
+    return new Promise((resolve, reject) => {
+      const tx = idb.transaction(store, mode);
+      const req = fn(tx.objectStore(store));
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = e => reject(e.target.error);
+    });
+  },
+  async get(store, key)    { return this._tx(store, 'readonly',  s => s.get(key)); },
+  async getAll(store)      { return this._tx(store, 'readonly',  s => s.getAll()); },
+  async put(store, value)  { return this._tx(store, 'readwrite', s => s.put(value)); },
+  async del(store, key)    { return this._tx(store, 'readwrite', s => s.delete(key)); },
+};
+
+// ─── OPFS STORE ───────────────────────────────────────────────────────────────
+const opfsStore = {
+  async _resolve(path, create = false) {
+    const root = await navigator.storage.getDirectory();
+    const parts = path.split('/').filter(Boolean);
+    let dir = root;
+    for (const part of parts.slice(0, -1)) {
+      dir = await dir.getDirectoryHandle(part, { create });
+    }
+    return { dir, name: parts[parts.length - 1] };
+  },
+  async write(path, bytes) {
+    const { dir, name } = await this._resolve(path, true);
+    const fh = await dir.getFileHandle(name, { create: true });
+    const w = await fh.createWritable();
+    await w.write(bytes);
+    await w.close();
+  },
+  async read(path) {
+    const { dir, name } = await this._resolve(path);
+    const fh = await dir.getFileHandle(name);
+    const f = await fh.getFile();
+    return new Uint8Array(await f.arrayBuffer());
+  },
+  async delete(path) {
+    const { dir, name } = await this._resolve(path);
+    await dir.removeEntry(name);
+  },
+  async list(dirPath) {
+    const root = await navigator.storage.getDirectory();
+    const parts = dirPath.split('/').filter(Boolean);
+    let dir = root;
+    for (const p of parts) dir = await dir.getDirectoryHandle(p, { create: true });
+    const names = [];
+    for await (const [n] of dir.entries()) names.push(n);
+    return names;
+  },
+  async export(path, filename) {
+    const bytes = await this.read(path);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },
+};
+
+// ─── CRYPTO OPS ──────────────────────────────────────────────────────────────
+const cryptoOps = {
+  b64enc: buf => btoa(String.fromCharCode(...(buf instanceof Uint8Array ? buf : new Uint8Array(buf)))),
+  b64dec: b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0)),
+
+  async generateKeypair() {
+    return window.crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+  },
+  async exportPublicKeyB64(key) {
+    return this.b64enc(await window.crypto.subtle.exportKey('raw', key));
+  },
+  async exportPrivateKeyB64(key) {
+    return this.b64enc(await window.crypto.subtle.exportKey('pkcs8', key));
+  },
+  async importPublicKeyB64(b64) {
+    return window.crypto.subtle.importKey('raw', this.b64dec(b64), { name: 'Ed25519' }, true, ['verify']);
+  },
+  async importPrivateKeyB64(b64) {
+    return window.crypto.subtle.importKey('pkcs8', this.b64dec(b64), { name: 'Ed25519' }, true, ['sign']);
+  },
+  async sign(privateKey, dataBytes) {
+    const sig = await window.crypto.subtle.sign({ name: 'Ed25519' }, privateKey, dataBytes);
+    return this.b64enc(sig);
+  },
+  async verify(publicKey, signatureB64, dataBytes) {
+    return window.crypto.subtle.verify({ name: 'Ed25519' }, publicKey, this.b64dec(signatureB64), dataBytes);
+  },
+  async sha256(dataBytes) {
+    const h = await window.crypto.subtle.digest('SHA-256', dataBytes);
+    return Array.from(new Uint8Array(h)).map(b => b.toString(16).padStart(2, '0')).join('');
+  },
+  async sha256B64(dataBytes) {
+    return this.b64enc(await window.crypto.subtle.digest('SHA-256', dataBytes));
+  },
+  async fingerprint(publicKeyB64) {
+    const raw = this.b64dec(publicKeyB64);
+    const hex = await this.sha256(raw);
+    return hex.slice(0, 8).toUpperCase();
+  },
+  async identiconSeed(publicKeyB64) {
+    const raw = this.b64dec(publicKeyB64);
+    const h = await window.crypto.subtle.digest('SHA-256', raw);
+    return new Uint8Array(h);
+  },
+  async encryptPrivateKey(privateKeyB64, aesKey) {
+    const data = this.b64dec(privateKeyB64);
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, data);
+    return { ciphertext_b64: this.b64enc(ct), iv_b64: this.b64enc(iv) };
+  },
+  async decryptPrivateKey(ciphertextB64, ivB64, aesKey) {
+    const pt = await window.crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: this.b64dec(ivB64) },
+      aesKey,
+      this.b64dec(ciphertextB64)
+    );
+    return this.b64enc(pt);
+  },
+};
+
+// ─── PASSKEY ─────────────────────────────────────────────────────────────────
+const passkey = {
+  PRF_SALT: (() => {
+    const salt = new Uint8Array(32);
+    const src = new TextEncoder().encode('ssd-keyring-v1-salt');
+    salt.set(src.slice(0, 32));
+    return salt;
+  })(),
+
+  async register(label) {
+    const challenge = window.crypto.getRandomValues(new Uint8Array(32));
+    const userId = window.crypto.getRandomValues(new Uint8Array(16));
+    const rpId = window.location.hostname || 'localhost';
+
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'Signed, Sealed, Delivered', id: rpId },
+        user: { id: userId, name: label, displayName: label },
+        pubKeyCredParams: [
+          { alg: -7,   type: 'public-key' },  // ES256  — broadest support
+          { alg: -257, type: 'public-key' },  // RS256  — Windows Hello TPM fallback
+          { alg: -8,   type: 'public-key' },  // Ed25519 — newer platforms
+        ],
+        authenticatorSelection: {
+          userVerification: 'required',
+          residentKey: 'required',
+        },
+        extensions: { prf: {} },
+      },
+    });
+
+    const ext = cred.getClientExtensionResults();
+    const prfSupported = !!(ext.prf && ext.prf.enabled);
+
+    const credIdB64 = cryptoOps.b64enc(cred.rawId);
+    await db.put('settings', { key: 'credential_id', value: credIdB64 });
+    await db.put('settings', { key: 'prf_supported', value: prfSupported });
+    return { credIdB64, prfSupported };
+  },
+
+  async authenticate() {
+    const credSetting = await db.get('settings', 'credential_id');
+    if (!credSetting) throw new Error('No passkey registered. Go to Settings first.');
+
+    const credentialId = cryptoOps.b64dec(credSetting.value);
+    const challenge = window.crypto.getRandomValues(new Uint8Array(32));
+    const rpId = window.location.hostname || 'localhost';
+
+    const assertion = await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId,
+        allowCredentials: [{ type: 'public-key', id: credentialId }],
+        userVerification: 'required',
+        extensions: { prf: { eval: { first: this.PRF_SALT } } },
+      },
+    });
+
+    const ext = assertion.getClientExtensionResults();
+    const prfOutput = ext.prf?.results?.first;
+
+    if (!prfOutput) return { aesKey: null, prfUnsupported: true };
+
+    const prfKey = await window.crypto.subtle.importKey('raw', prfOutput, { name: 'HKDF' }, false, ['deriveKey']);
+    const aesKey = await window.crypto.subtle.deriveKey(
+      {
+        name: 'HKDF', hash: 'SHA-256',
+        salt: new TextEncoder().encode('ssd-keyring-v1'),
+        info: new TextEncoder().encode('private-key-encryption'),
+      },
+      prfKey,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+    return { aesKey };
+  },
+
+  async confirmAndSign(privateKey, dataBytes) {
+    const credSetting = await db.get('settings', 'credential_id');
+    if (!credSetting) throw new Error('No passkey registered.');
+
+    const credentialId = cryptoOps.b64dec(credSetting.value);
+    const challenge = window.crypto.getRandomValues(new Uint8Array(32));
+    const rpId = window.location.hostname || 'localhost';
+
+    await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId,
+        allowCredentials: [{ type: 'public-key', id: credentialId }],
+        userVerification: 'required',
+      },
+    });
+
+    return cryptoOps.sign(privateKey, dataBytes);
+  },
+};
+
+// ─── KEYRING ─────────────────────────────────────────────────────────────────
+const keyring = {
+  _sessionKey: null,
+
+  async unlock() {
+    const { aesKey, prfUnsupported } = await passkey.authenticate();
+    if (prfUnsupported) {
+      throw new Error('This passkey does not support secure key storage. Use a phone (Chrome on Android or Safari on iOS 18+) or a FIDO2 hardware key such as a YubiKey 5.');
+    }
+    this._sessionKey = aesKey;
+    return this._sessionKey;
+  },
+
+  async ensureUnlocked() {
+    if (!this._sessionKey) await this.unlock();
+    return this._sessionKey;
+  },
+
+  async createKey(name) {
+    await this.ensureUnlocked();
+    const { publicKey, privateKey } = await cryptoOps.generateKeypair();
+    const pubB64 = await cryptoOps.exportPublicKeyB64(publicKey);
+    const privB64 = await cryptoOps.exportPrivateKeyB64(privateKey);
+    const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(privB64, this._sessionKey);
+    const fingerprint = await cryptoOps.fingerprint(pubB64);
+    const existing = await db.getAll('my_keys');
+    const id = window.crypto.randomUUID();
+    const record = {
+      id, name, fingerprint,
+      public_key_b64: pubB64,
+      private_key_encrypted: ciphertext_b64,
+      private_key_iv: iv_b64,
+      identicon_algorithm: 'ssd-identicon-1.0',
+      self_image_b64: null,
+      created: new Date().toISOString(),
+      expires: null, recheck_interval_days: null, revocation_hint: null,
+      is_default: existing.length === 0,
+      is_revoked: false,
+    };
+    await db.put('my_keys', record);
+    return record;
+  },
+
+  async getPrivateKey(keyId) {
+    if (!this._sessionKey) throw new Error('Keyring locked — authenticate first.');
+    const rec = await db.get('my_keys', keyId);
+    if (!rec) throw new Error('Key not found.');
+    const privB64 = await cryptoOps.decryptPrivateKey(rec.private_key_encrypted, rec.private_key_iv, this._sessionKey);
+    return cryptoOps.importPrivateKeyB64(privB64);
+  },
+
+  async exportKeyCard(keyId) {
+    const rec = await db.get('my_keys', keyId);
+    if (!rec) throw new Error('Key not found.');
+    const cardData = {
+      chain: [],
+      expires: rec.expires,
+      fingerprint: rec.fingerprint,
+      identicon_algorithm: rec.identicon_algorithm,
+      issued: rec.created,
+      name: rec.name,
+      public_key: rec.public_key_b64,
+      recheck_interval_days: rec.recheck_interval_days ?? 90,
+      revocation_hint: rec.revocation_hint,
+      self_image: rec.self_image_b64,
+      signing_algorithm: 'Ed25519',
+      version: '1.0',
+    };
+    const sortedKeys = Object.keys(cardData).sort();
+    const canonical = JSON.stringify(Object.fromEntries(sortedKeys.map(k => [k, cardData[k]])));
+    const dataBytes = new TextEncoder().encode(canonical);
+    const privateKey = await this.getPrivateKey(keyId);
+    const selfSigned = await cryptoOps.sign(privateKey, dataBytes);
+    return { ...cardData, self_signed: selfSigned };
+  },
+
+  async verifyKeyCard(card) {
+    const { self_signed, ...data } = card;
+    const sortedKeys = Object.keys(data).sort();
+    const canonical = JSON.stringify(Object.fromEntries(sortedKeys.map(k => [k, data[k]])));
+    const dataBytes = new TextEncoder().encode(canonical);
+    const publicKey = await cryptoOps.importPublicKeyB64(card.public_key);
+    return cryptoOps.verify(publicKey, self_signed, dataBytes);
+  },
+};
+
+// ─── SIGNER ──────────────────────────────────────────────────────────────────
+const signer = {
+  canonicalise(rawText) {
+    let t = rawText.normalize('NFC').replace(/\r\n|\r/g, '\n');
+    t = t.split('\n').map(l => l.trimEnd()).join('\n');
+    if (!t.endsWith('\n')) t += '\n';
+    return t;
+  },
+  wrap(text, width = 80) {
+    return text.split('\n').map(line => {
+      if (line.length <= width) return line;
+      const words = line.split(' ');
+      const out = [];
+      let cur = '';
+      for (const w of words) {
+        if (cur && (cur + ' ' + w).length > width) { out.push(cur); cur = w; }
+        else cur = cur ? cur + ' ' + w : w;
+      }
+      if (cur) out.push(cur);
+      return out.join('\n');
+    }).join('\n');
+  },
+  buildSignatureBlock(fingerprint, name, timestamp, sigField = '[see signature.json]') {
+    return [
+      '---',
+      `Signed by: ${name} [${fingerprint}]`,
+      `Timestamp: ${timestamp}`,
+      'Render spec: ssd-render-1.0',
+      'I rendered this document using the above spec, confirmed the output, and signed it.',
+      `Signature: ${sigField}`,
+      '---',
+    ].join('\n');
+  },
+  buildRender(wrappedText, signatureBlock) {
+    return wrappedText + '\n' + signatureBlock;
+  },
+};
+
+// ─── ARTIFACT ────────────────────────────────────────────────────────────────
+const artifact = {
+  async pack(sourceText, renderText, manifestObj, signatureObj) {
+    const enc = new TextEncoder();
+    return fflate.zipSync({
+      'manifest.json': fflate.strToU8(JSON.stringify(manifestObj, null, 2)),
+      'source.txt':    fflate.strToU8(sourceText),
+      'render.txt':    fflate.strToU8(renderText),
+      'signature.json': fflate.strToU8(JSON.stringify(signatureObj, null, 2)),
+    });
+  },
+
+  async unpack(sealedBytes) {
+    let files;
+    try { files = fflate.unzipSync(sealedBytes); }
+    catch { throw new Error('File is not a valid .sealed archive.'); }
+    const need = ['manifest.json', 'source.txt', 'render.txt', 'signature.json'];
+    for (const f of need) if (!files[f]) throw new Error(`Missing ${f} in archive.`);
+    return {
+      manifest:  JSON.parse(fflate.strFromU8(files['manifest.json'])),
+      source:    fflate.strFromU8(files['source.txt']),
+      render:    fflate.strFromU8(files['render.txt']),
+      signature: JSON.parse(fflate.strFromU8(files['signature.json'])),
+    };
+  },
+
+  async verify(unpacked) {
+    const { manifest, source, render, signature } = unpacked;
+    const enc = new TextEncoder();
+    const result = {
+      signature_valid: false, content_unmodified: false,
+      signed_at: signature.signed_at, render_spec: manifest.render_spec,
+      signer_fingerprint: signature.signer_fingerprint, signer_name: null,
+      signer_known: false, trust_types: [], key_expired: false, key_revoked: false,
+      recheck_due: false, recheck_overdue: false, decryption_logged: false,
+      errors: [], warnings: [],
+    };
+
+    // Verify content hashes
+    const srcHash = 'sha256:' + await cryptoOps.sha256(enc.encode(source));
+    const renHash = 'sha256:' + await cryptoOps.sha256(enc.encode(render));
+    if (srcHash !== manifest.files?.['source.txt']) result.errors.push('source.txt hash mismatch — content modified.');
+    if (renHash !== manifest.files?.['render.txt']) result.errors.push('render.txt hash mismatch — content modified.');
+    result.content_unmodified = result.errors.length === 0;
+
+    // Verify signature
+    const myKeys = await db.getAll('my_keys');
+    const contactKeys = await db.getAll('contact_keys');
+    const signerRec = [...myKeys, ...contactKeys].find(k => k.fingerprint === signature.signer_fingerprint);
+
+    if (!signerRec) {
+      result.warnings.push(`Signer key ${signature.signer_fingerprint} not in keyring — cannot verify signature.`);
+      return result;
+    }
+
+    result.signer_name = signerRec.name;
+    result.signer_known = true;
+    result.trust_types = myKeys.find(k => k.id === signerRec.id) ? ['self'] : [signerRec.trust_type || 'peer'];
+
+    // Verify Ed25519 signature over manifest bytes
+    const manifestText = JSON.stringify(manifest, null, 2);
+    const manifestBytes = enc.encode(manifestText);
+    const manifestHash = 'sha256:' + await cryptoOps.sha256(manifestBytes);
+
+    if (manifestHash !== signature.manifest_hash) {
+      result.errors.push('Manifest hash in signature.json does not match manifest.json.');
+    }
+
+    try {
+      const pubKey = await cryptoOps.importPublicKeyB64(signerRec.public_key_b64);
+      result.signature_valid = await cryptoOps.verify(pubKey, signature.signature, manifestBytes);
+      if (!result.signature_valid) result.errors.push('Ed25519 signature verification failed.');
+    } catch (e) {
+      result.errors.push('Signature verification error: ' + e.message);
+    }
+
+    if (signerRec.is_revoked) { result.key_revoked = true; result.errors.push('Signing key is revoked.'); }
+    if (signerRec.expires) {
+      const expiry = new Date(signerRec.expires), signedAt = new Date(signature.signed_at);
+      if (signedAt > expiry) { result.key_expired = true; result.warnings.push('Document was signed after key expiry.'); }
+    }
+    if (signerRec.recheck_interval_days && signerRec.last_checked) {
+      const days = (Date.now() - new Date(signerRec.last_checked)) / 86400000;
+      if (days > signerRec.recheck_interval_days) {
+        result.recheck_overdue = true;
+        result.warnings.push(`Key recheck overdue — last verified ${Math.floor(days)} days ago.`);
+      }
+    }
+
+    return result;
+  },
+};
+
+// ─── IDENTICON ───────────────────────────────────────────────────────────────
+const identicon = {
+  algorithmId: () => 'ssd-identicon-1.0',
+
+  render(seed, canvas, size = 64) {
+    const ctx = canvas.getContext('2d');
+    canvas.width = size; canvas.height = size;
+    ctx.clearRect(0, 0, size, size);
+
+    // 15 unique cells (3 cols × 5 rows), mirrored to 5×5
+    const bits = [];
+    for (let i = 0; i < 15; i++) bits.push((seed[Math.floor(i / 8)] >> (7 - (i % 8))) & 1);
+
+    const grid = [];
+    for (let r = 0; r < 5; r++) {
+      const row = [];
+      for (let c = 0; c < 5; c++) {
+        const mc = c > 2 ? 4 - c : c;
+        row.push(bits[r * 3 + mc]);
+      }
+      grid.push(row);
+    }
+
+    const hue = Math.floor((seed[16] / 255) * 360);
+    const sat = 45 + Math.floor((seed[17] / 255) * 30);
+    const lig = 40 + Math.floor((seed[18] / 255) * 25);
+    ctx.fillStyle = `hsl(${hue},${sat}%,${lig}%)`;
+
+    const cell = size / 5;
+    for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
+      if (grid[r][c]) ctx.fillRect(c * cell, r * cell, cell, cell);
+    }
+  },
+
+  renderToDataURL(seed, size = 64) {
+    const c = document.createElement('canvas');
+    this.render(seed, c, size);
+    return c.toDataURL();
+  },
+};
+
+// ─── UI ───────────────────────────────────────────────────────────────────────
+const ui = {
+  showSection(id) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    const sec = document.getElementById(id);
+    if (sec) sec.classList.add('active');
+    const btn = document.querySelector(`[data-section="${id}"]`);
+    if (btn) btn.classList.add('active');
+    this.clear();
+    if (id === 'keyring')  app.loadKeyring();
+    if (id === 'compose')  app.loadComposeKeys();
+    if (id === 'settings') app.checkPasskeyStatus();
+  },
+  display(html) {
+    const r = document.getElementById('results');
+    const d = document.createElement('div');
+    d.className = 'result-item';
+    d.innerHTML = html;
+    r.appendChild(d);
+  },
+  clear() { document.getElementById('results').innerHTML = ''; },
+  displayVerification(result) {
+    const ok = v => v ? '<span class="ok">✓</span>' : '<span class="fail">✗</span>';
+    let h = '<div class="verify-result">';
+    h += `<div>${ok(result.signature_valid)} Signature ${result.signature_valid ? 'valid' : '<strong>INVALID</strong>'}</div>`;
+    h += `<div>${ok(result.content_unmodified)} Content ${result.content_unmodified ? 'unmodified' : '<strong>MODIFIED</strong>'}</div>`;
+    if (result.signed_at) {
+      const d = new Date(result.signed_at).toISOString().replace('T', ' ').slice(0, 16);
+      h += `<div class="ok">✓ Signed: ${d} UTC &nbsp;[${result.render_spec}]</div>`;
+    }
+    if (result.signer_fingerprint) {
+      const who = result.signer_known ? ` — ${result.signer_name} (${result.trust_types.join(', ')})` : ' (unknown)';
+      const cls = result.signer_known ? 'info' : 'warn';
+      h += `<div class="${cls}">◎ Key: <span class="mono">${result.signer_fingerprint}</span>${who}</div>`;
+    }
+    for (const w of result.warnings) h += `<div class="warn">⚠ ${w}</div>`;
+    for (const e of result.errors)   h += `<div class="fail">✗ ${e}</div>`;
+    h += '</div>';
+    this.display(h);
+  },
+};
+
+// ─── APP ─────────────────────────────────────────────────────────────────────
+const app = {
+  _sigCtx: null,
+
+  async init() {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./service-worker.js').catch(console.warn);
+    }
+
+    const vEl = document.getElementById('about-version');
+    if (vEl) vEl.textContent = APP_VERSION;
+
+    // Check secure context
+    if (!window.isSecureContext) {
+      const warn = document.createElement('div');
+      warn.className = 'no-webauthn';
+      warn.style.margin = '0 20px 0';
+      warn.textContent = '⚠ WebAuthn requires a secure context. Serve this app via HTTPS or localhost.';
+      document.querySelector('header').after(warn);
+    }
+
+    // Check Ed25519 support
+    try {
+      await window.crypto.subtle.generateKey({ name: 'Ed25519' }, false, ['sign', 'verify']);
+    } catch {
+      ui.display('<span class="fail">✗ Ed25519 not supported in this browser. Please use Chrome 113+, Firefox 130+, or Safari 17+.</span>');
+    }
+
+    ui.showSection('keyring');
+  },
+
+  async loadKeyring() {
+    const list = document.getElementById('keyring-list');
+    const keys = await db.getAll('my_keys');
+    if (keys.length === 0) {
+      list.innerHTML = '<div class="empty-state"><p>No keys yet.</p><p style="margin-top:8px"><a href="#" onclick="ui.showSection(\'settings\')">Register a passkey</a> first, then <a href="#" onclick="ui.showSection(\'newKey\')">create a key →</a></p></div>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const k of keys) list.appendChild(await this._buildKeyCard(k));
+  },
+
+  async _buildKeyCard(rec) {
+    const div = document.createElement('div');
+    div.className = 'key-card';
+    const seed = await cryptoOps.identiconSeed(rec.public_key_b64);
+    const imgSrc = identicon.renderToDataURL(seed, 64);
+    const badges = [
+      rec.is_default ? '<span class="badge badge-primary">Default</span>' : '',
+      rec.is_revoked ? '<span class="badge badge-danger">Revoked</span>' : '',
+    ].join('');
+    div.innerHTML = `
+      <div class="key-card-header">
+        <img src="${imgSrc}" width="48" height="48" class="identicon" alt="">
+        <div class="key-card-meta">
+          <div class="key-name">${rec.name}${badges}</div>
+          <div class="key-fp">${rec.fingerprint}</div>
+        </div>
+      </div>
+      <div class="key-card-actions">
+        <button onclick="app.doExportKeyCard('${rec.id}')">Export Key Card</button>
+        <button class="btn-secondary" onclick="app.startSign('${rec.id}')">Sign Document</button>
+      </div>`;
+    return div;
+  },
+
+  async loadComposeKeys() {
+    const sel = document.getElementById('compose-key-select');
+    const keys = await db.getAll('my_keys');
+    sel.innerHTML = keys.length
+      ? keys.map(k => `<option value="${k.id}"${k.is_default?' selected':''}>${k.name} [${k.fingerprint}]</option>`).join('')
+      : '<option value="">— No keys —</option>';
+  },
+
+  startSign(keyId) {
+    ui.showSection('compose');
+    const sel = document.getElementById('compose-key-select');
+    for (const opt of sel.options) if (opt.value === keyId) { opt.selected = true; break; }
+  },
+
+  async previewSign() {
+    const text = document.getElementById('compose-text').value;
+    const keyId = document.getElementById('compose-key-select').value;
+    if (!text.trim()) { ui.clear(); ui.display('<span class="warn">Please enter document text.</span>'); return; }
+    if (!keyId)       { ui.clear(); ui.display('<span class="warn">Please select a signing key.</span>'); return; }
+    const rec = await db.get('my_keys', keyId);
+    if (!rec) { ui.clear(); ui.display('<span class="fail">Key not found.</span>'); return; }
+
+    const canonical = signer.canonicalise(text);
+    const wrapped   = signer.wrap(canonical);
+    const timestamp = new Date().toISOString();
+    const block     = signer.buildSignatureBlock(rec.fingerprint, rec.name, timestamp);
+    const render    = signer.buildRender(wrapped, block);
+
+    this._sigCtx = { keyId, wrapped, timestamp, render, rec };
+    document.getElementById('confirm-render').textContent = render;
+    ui.showSection('signConfirm');
+  },
+
+  async confirmSign() {
+    if (!this._sigCtx) { ui.showSection('compose'); return; }
+    const { keyId, wrapped, timestamp, render, rec } = this._sigCtx;
+
+    ui.showSection('keyring');
+    ui.display('Confirm with your passkey to sign…');
+
+    try {
+      // Single passkey prompt: unlocks key storage AND confirms signing intent
+      await keyring.unlock();
+
+      const enc = new TextEncoder();
+      const srcHash = 'sha256:' + await cryptoOps.sha256(enc.encode(wrapped));
+      const renHash = 'sha256:' + await cryptoOps.sha256(enc.encode(render));
+
+      const manifestObj = {
+        version: '1.0', render_spec: 'ssd-render-1.0',
+        signed_at: timestamp, encrypted: false,
+        signer_fingerprint: rec.fingerprint, signer_name: rec.name,
+        files: { 'source.txt': srcHash, 'render.txt': renHash },
+      };
+      const manifestBytes = enc.encode(JSON.stringify(manifestObj, null, 2));
+
+      const privateKey = await keyring.getPrivateKey(keyId);
+      const signature  = await cryptoOps.sign(privateKey, manifestBytes);
+
+      ui.display('Packaging…');
+      const manifestHash = 'sha256:' + await cryptoOps.sha256(manifestBytes);
+      const signatureObj = {
+        algorithm: 'Ed25519', signer_fingerprint: rec.fingerprint,
+        signed_at: timestamp, manifest_hash: manifestHash, signature,
+      };
+
+      const sealedBytes = await artifact.pack(wrapped, render, manifestObj, signatureObj);
+      const artifactId  = window.crypto.randomUUID();
+      const opfsPath    = `artifacts/${artifactId}.sealed`;
+      await opfsStore.write(opfsPath, sealedBytes);
+
+      await db.put('artifacts', {
+        id: artifactId, direction: 'sent', signed_by_key_id: keyId,
+        fingerprint: rec.fingerprint,
+        artifact_hash: 'sha256:' + await cryptoOps.sha256(sealedBytes),
+        render_spec: 'ssd-render-1.0', created: timestamp,
+        encrypted: false, encrypted_for: [], opfs_path: opfsPath,
+        summary: wrapped.slice(0, 80),
+      });
+
+      // Download
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([sealedBytes], { type: 'application/x-ssd-sealed' }));
+      a.download = `ssd-${rec.fingerprint}-${Date.now()}.sealed`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+
+      this._sigCtx = null;
+      ui.clear();
+      ui.display(`<div class="ok">✓ Document signed and downloaded.</div>
+        <div>Key: <span class="mono">${rec.fingerprint}</span> — ${rec.name}</div>
+        <div>Signed: ${timestamp}</div>`);
+      await this.loadKeyring();
+
+    } catch (e) {
+      ui.clear();
+      ui.display(`<span class="fail">Signing failed: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  async verifyArtifact(file) {
+    ui.clear();
+    ui.display('Verifying…');
+    try {
+      const bytes    = new Uint8Array(await file.arrayBuffer());
+      const unpacked = await artifact.unpack(bytes);
+      const result   = await artifact.verify(unpacked);
+      ui.clear();
+      ui.display('<strong>Rendered document:</strong>');
+      const pre = document.createElement('pre');
+      pre.className = 'render-preview';
+      pre.textContent = unpacked.render;
+      document.getElementById('results').appendChild(pre);
+      ui.displayVerification(result);
+    } catch (e) {
+      ui.clear();
+      ui.display(`<span class="fail">Verification failed: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  handleDrop(event) {
+    event.preventDefault();
+    document.getElementById('verify-drop').classList.remove('drag-over');
+    const file = event.dataTransfer.files[0];
+    if (file) this.verifyArtifact(file);
+  },
+
+  async createKey() {
+    const name = document.getElementById('new-key-name').value.trim();
+    if (!name) { ui.display('<span class="warn">Please enter a key name.</span>'); return; }
+    ui.clear();
+    ui.display('Generating keypair…');
+    try {
+      const rec = await keyring.createKey(name);
+      document.getElementById('new-key-name').value = '';
+      ui.clear();
+      ui.display(`<div class="ok">✓ Key created: <strong>${rec.name}</strong> [<span class="mono">${rec.fingerprint}</span>]</div>`);
+      ui.showSection('keyring');
+    } catch (e) {
+      ui.clear();
+      ui.display(`<span class="fail">Key creation failed: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  async doExportKeyCard(keyId) {
+    ui.clear();
+    ui.display('Preparing key card…');
+    try {
+      await keyring.ensureUnlocked();
+      const card = await keyring.exportKeyCard(keyId);
+
+      // Verify self-signature before export
+      const valid = await keyring.verifyKeyCard(card);
+      if (!valid) throw new Error('Self-signature verification failed — key may be corrupt.');
+
+      const json = JSON.stringify(card, null, 2);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      a.download = `ssd-key-${card.fingerprint}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+
+      ui.clear();
+      ui.display(`<div class="ok">✓ Key card exported and self-signature verified.</div>
+        <div>${card.name} [<span class="mono">${card.fingerprint}</span>]</div>
+        <div style="margin-top:10px;font-size:12px;color:var(--text-muted)">Click below to copy JSON:</div>`);
+      const pre = document.createElement('pre');
+      pre.className = 'key-card-json';
+      pre.title = 'Click to copy';
+      pre.textContent = json;
+      pre.onclick = () => { navigator.clipboard.writeText(json); ui.display('Copied to clipboard.'); };
+      document.getElementById('results').appendChild(pre);
+    } catch (e) {
+      ui.clear();
+      ui.display(`<span class="fail">Export failed: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  async registerPasskey() {
+    const existing = await db.get('settings', 'credential_id');
+    if (existing) {
+      ui.display('<span class="warn">A passkey is already registered. Use "Clear passkey and all keys…" below to replace it.</span>');
+      return;
+    }
+    const label = document.getElementById('passkey-label').value.trim() || 'SSD Keyring';
+    ui.clear();
+    ui.display('Registering passkey…');
+    try {
+      const { prfSupported } = await passkey.register(label);
+      ui.clear();
+      if (!prfSupported) {
+        await db.del('settings', 'credential_id');
+        await db.del('settings', 'prf_supported');
+        ui.display('<div class="fail">Passkey not registered — it doesn\'t support secure key storage. Use a phone (Chrome on Android or Safari on iOS 18+) or a FIDO2 hardware key.</div>');
+      } else {
+        ui.display('<div class="ok">✓ Passkey registered.</div>');
+      }
+      await this.checkPasskeyStatus();
+    } catch (e) {
+      ui.clear();
+      ui.display(`<span class="fail">Registration failed: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  async clearPasskey() {
+    const keys = await db.getAll('my_keys');
+    const keyWord = keys.length === 1 ? '1 signing key' : `${keys.length} signing keys`;
+    const msg = keys.length > 0
+      ? `This will permanently delete your passkey registration and ${keyWord}. They cannot be recovered. Continue?`
+      : 'This will remove your passkey registration. Continue?';
+    if (!confirm(msg)) return;
+    await db.del('settings', 'credential_id');
+    await db.del('settings', 'prf_supported');
+    for (const k of keys) await db.del('my_keys', k.id);
+    keyring._sessionKey = null;
+    ui.clear();
+    ui.display('<div class="ok">Cleared. You can now register a new passkey.</div>');
+    await this.checkPasskeyStatus();
+    await this.loadKeyring();
+  },
+
+  async checkPasskeyStatus() {
+    const el = document.getElementById('passkey-status');
+    if (!el) return;
+    const cred = await db.get('settings', 'credential_id');
+    el.textContent = cred ? '✓ Passkey registered.' : 'No passkey registered.';
+    el.className = cred ? 'ok' : '';
+    const registerUI = document.getElementById('passkey-register-ui');
+    const replaceUI  = document.getElementById('passkey-replace-ui');
+    if (registerUI) registerUI.style.display = cred ? 'none' : '';
+    if (replaceUI)  replaceUI.style.display  = cred ? ''     : 'none';
+  },
+};
+
+app.init().catch(console.error);
+</script>
+</body>
+</html>
