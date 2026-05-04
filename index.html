@@ -127,6 +127,8 @@
     .modal-box p { font-size:12px; color:var(--text-muted); margin-bottom:16px; line-height:1.5; }
     .modal-box .qr-wrap { display:flex; justify-content:center; margin-bottom:16px; }
     .modal-box .qr-wrap > * { border-radius:4px; }
+    .fab { position:fixed; bottom:24px; right:20px; width:52px; height:52px; border-radius:50%; font-size:26px; font-weight:300; line-height:1; padding:0; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 16px rgba(0,0,0,0.5); z-index:50; }
+    .validate-result { margin-top:12px; font-size:13px; padding:10px 14px; border-radius:var(--radius); border:1px solid var(--border); background:var(--surface-2); }
   </style>
 </head>
 <body>
@@ -135,7 +137,6 @@
   <nav>
     <button class="nav-btn active" data-section="keyring" onclick="ui.showSection('keyring')">Keyring</button>
     <button class="nav-btn" data-section="contacts" onclick="ui.showSection('contacts')">Contacts</button>
-    <button class="nav-btn" data-section="newKey" onclick="ui.showSection('newKey')">+ New Key</button>
     <button class="nav-btn" data-section="compose" onclick="ui.showSection('compose')">Sign</button>
     <button class="nav-btn" data-section="verify" onclick="ui.showSection('verify')">Verify</button>
     <button class="nav-btn" data-section="settings" onclick="ui.showSection('settings')">Settings</button>
@@ -147,6 +148,8 @@
   <section id="keyring" class="section active">
     <h2>My Keys</h2>
     <div id="keyring-list"></div>
+    <div id="validate-result" class="validate-result" style="display:none"></div>
+    <button class="fab" onclick="ui.showSection('newKey')" title="Add new key">+</button>
   </section>
 
   <!-- NEW KEY -->
@@ -339,7 +342,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v18';
+const APP_VERSION = 'ssd-v19';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -968,12 +971,7 @@ const app = {
     const list = document.getElementById('keyring-list');
     const keys = await db.getAll('my_keys');
     if (keys.length === 0) {
-      const cred = await db.get('settings', 'credential_id');
-      if (!cred) {
-        list.innerHTML = '<div class="empty-state"><p>No keys yet.</p><p style="margin-top:8px"><a href="#" onclick="ui.showSection(\'settings\')">Register a passkey</a> first, then <a href="#" onclick="ui.showSection(\'newKey\')">create a key →</a></p></div>';
-      } else {
-        list.innerHTML = '<div class="empty-state"><p>No keys yet.</p><p style="margin-top:8px"><a href="#" onclick="ui.showSection(\'newKey\')">Create your first key →</a></p></div>';
-      }
+      list.innerHTML = '<div class="empty-state"><p>No keys yet.</p><p style="margin-top:8px">Tap <strong>+</strong> to create your first key.</p></div>';
       return;
     }
     list.innerHTML = '';
@@ -1001,6 +999,7 @@ const app = {
         <button onclick="app.doExportKeyCard('${rec.id}')">Export Key Card</button>
         <button class="btn-secondary" onclick="app.startSign('${rec.id}')">Sign Document</button>
         <button class="btn-secondary" onclick="app.showKeyCardQR('${rec.id}')">Show QR</button>
+        <button class="btn-secondary" onclick="app.validateKey('${rec.id}')">Validate</button>
       </div>`;
     return div;
   },
@@ -1556,11 +1555,12 @@ const app = {
     if (!showing) this.loadContacts();
   },
 
-  async startQRScan() {
+  async startQRScan(onScan = null) {
     const modal  = document.getElementById('scan-modal');
     const video  = document.getElementById('scan-video');
     const status = document.getElementById('scan-status');
     if (!modal || !video) return;
+    this._scanCallback = onScan;
     modal.style.display = 'flex';
     status.textContent = 'Requesting camera…';
     try {
@@ -1670,10 +1670,15 @@ const app = {
 
   stopQRScan() {
     this._scanRunning = false;
+    this._scanCallback = null;
     this._barcodeDetector = null;
     if (this._scanStream) { this._scanStream.getTracks().forEach(t => t.stop()); this._scanStream = null; }
     const modal = document.getElementById('scan-modal');
     if (modal) modal.style.display = 'none';
+    const h3 = document.querySelector('#scan-modal h3');
+    if (h3) h3.textContent = 'Scan Key Card';
+    const status = document.getElementById('scan-status');
+    if (status) status.textContent = 'Point your camera at a key card QR code.';
   },
 
   async _handleScannedQR(data) {
@@ -1683,6 +1688,12 @@ const app = {
       if (el) el.textContent = `Decoded (${data.length} chars): ${data}`;
       log('raw scan result:', data.length, 'chars —', data.slice(0, 80));
       ui.showSection('dev');
+      return;
+    }
+    if (this._scanCallback) {
+      const cb = this._scanCallback;
+      this._scanCallback = null;
+      cb(data);
       return;
     }
     let card;
@@ -1697,6 +1708,41 @@ const app = {
     }
     ui.showSection('contacts');
     await this.importContactCard(card, 'qr_scan');
+  },
+
+  async validateKey(keyId) {
+    const rec = await db.get('my_keys', keyId);
+    if (!rec) return;
+    const resultEl = document.getElementById('validate-result');
+    if (resultEl) { resultEl.style.display = 'none'; resultEl.textContent = ''; }
+
+    const scanTitle = document.querySelector('#scan-modal h3');
+    const scanStatus = document.getElementById('scan-status');
+    if (scanTitle) scanTitle.textContent = 'Validate Key';
+    if (scanStatus) scanStatus.textContent = 'Show this key\'s QR on another device, then point camera at it.';
+
+    await this.startQRScan(data => {
+      ui.showSection('keyring');
+      if (!resultEl) return;
+      let scanned;
+      try { scanned = JSON.parse(data); } catch {
+        resultEl.innerHTML = '<span class="fail">Not a valid key card QR.</span>';
+        resultEl.style.display = 'block';
+        return;
+      }
+      const scannedKey = scanned.ssd === 'qr1' ? scanned.k : scanned.public_key;
+      if (!scannedKey) {
+        resultEl.innerHTML = '<span class="fail">QR does not contain a public key.</span>';
+        resultEl.style.display = 'block';
+        return;
+      }
+      if (scannedKey === rec.public_key_b64) {
+        resultEl.innerHTML = `<span class="ok">&#10003; Confirmed — the scanned QR matches <strong>${rec.name}</strong>.</span>`;
+      } else {
+        resultEl.innerHTML = `<span class="fail">&#10005; Mismatch — the scanned QR does not match <strong>${rec.name}</strong>.</span>`;
+      }
+      resultEl.style.display = 'block';
+    });
   },
 };
 
