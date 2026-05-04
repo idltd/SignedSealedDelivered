@@ -246,6 +246,30 @@
       </div>
     </div>
     <div class="settings-block">
+      <h3>Devices</h3>
+      <div class="form-group">
+        <label>This device's name</label>
+        <div style="display:flex;gap:8px">
+          <input id="device-name-input" type="text" placeholder="e.g. My Phone" maxlength="60" style="flex:1">
+          <button class="btn-secondary" onclick="app.saveDeviceName()">Save</button>
+        </div>
+      </div>
+      <div id="sync-key-status" style="font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:var(--radius);background:var(--surface-2)">Checking…</div>
+      <div id="sync-key-actions" style="display:none;margin-bottom:16px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-secondary" onclick="app.showPairingQR()">Show pairing QR</button>
+          <button class="btn-secondary" onclick="app.scanPairingQR()">Pair with a device</button>
+        </div>
+      </div>
+      <div id="sync-key-generate-ui" style="display:none;margin-bottom:12px">
+        <button onclick="app.generateSyncKey()">Set up sync</button>
+      </div>
+      <div id="paired-devices-list"></div>
+      <div id="sync-receive-wrap" style="display:none;margin-top:12px">
+        <button class="btn-secondary" onclick="app.receiveSync()">Receive from clipboard</button>
+      </div>
+    </div>
+    <div class="settings-block">
       <h3>About</h3>
       <p>Signed, Sealed, Delivered · Phase 2 · cache <span id="about-version" class="mono"></span></p>
       <p style="margin-top:8px;color:var(--text-muted);font-size:13px">All cryptography runs in the browser. Nothing sensitive leaves this device.</p>
@@ -375,7 +399,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v21';
+const APP_VERSION = 'ssd-v22';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -394,7 +418,7 @@ const db = {
   async init() {
     if (this._db) return this._db;
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('ssd-keyring', 2);
+      const req = indexedDB.open('ssd-keyring', 3);
       req.onupgradeneeded = e => {
         const idb = e.target.result;
         const tx  = e.target.transaction;
@@ -409,6 +433,15 @@ const db = {
           if (!idb.objectStoreNames.contains('contacts')) {
             idb.createObjectStore('contacts', { keyPath: 'id' });
           }
+        }
+
+        if (e.oldVersion < 3) {
+          if (!idb.objectStoreNames.contains('paired_devices')) {
+            idb.createObjectStore('paired_devices', { keyPath: 'id' });
+          }
+        }
+
+        if (e.oldVersion < 2) {
           // Migrate existing contact_keys: create a person record for each
           if (e.oldVersion >= 1) {
             const contactsStore = tx.objectStore('contacts');
@@ -560,6 +593,33 @@ const cryptoOps = {
   async exportX25519PrivateKeyB64(key) {
     return this.b64enc(await window.crypto.subtle.exportKey('pkcs8', key));
   },
+  async importX25519PublicKeyB64(b64) {
+    return window.crypto.subtle.importKey('raw', this.b64dec(b64), { name: 'X25519' }, true, []);
+  },
+  async importX25519PrivateKeyB64(b64) {
+    return window.crypto.subtle.importKey('pkcs8', this.b64dec(b64), { name: 'X25519' }, true, ['deriveKey', 'deriveBits']);
+  },
+  async deriveSharedKey(myPrivateKey, theirPublicKey, info = 'ssd-sync-v1') {
+    const bits = await window.crypto.subtle.deriveBits({ name: 'X25519', public: theirPublicKey }, myPrivateKey, 256);
+    const hkdf = await window.crypto.subtle.importKey('raw', bits, { name: 'HKDF' }, false, ['deriveKey']);
+    return window.crypto.subtle.deriveKey(
+      { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode(info) },
+      hkdf, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']
+    );
+  },
+  async encryptJSON(payload, aesKey) {
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, new TextEncoder().encode(JSON.stringify(payload)));
+    return { iv_b64: this.b64enc(iv), ct_b64: this.b64enc(ct) };
+  },
+  async decryptJSON(iv_b64, ct_b64, aesKey) {
+    const pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: this.b64dec(iv_b64) }, aesKey, this.b64dec(ct_b64));
+    return JSON.parse(new TextDecoder().decode(pt));
+  },
+  async verificationCode(pubKeyB64) {
+    const hex = await this.sha256(this.b64dec(pubKeyB64));
+    return String(parseInt(hex.slice(0, 8), 16) % 1000000).padStart(6, '0');
+  },
 };
 
 // ─── PASSKEY ─────────────────────────────────────────────────────────────────
@@ -678,6 +738,29 @@ const keyring = {
   async ensureUnlocked() {
     if (!this._sessionKey) await this.unlock();
     return this._sessionKey;
+  },
+
+  async ensureSyncKey() {
+    const existing = await db.get('settings', 'my_sync_key_pub');
+    if (existing) return existing.value;
+    const kp = await cryptoOps.generateX25519Keypair();
+    const pubB64  = await cryptoOps.exportX25519PublicKeyB64(kp.publicKey);
+    const privB64 = await cryptoOps.exportX25519PrivateKeyB64(kp.privateKey);
+    const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(privB64, this._sessionKey);
+    await db.put('settings', { key: 'my_sync_key_pub', value: pubB64 });
+    await db.put('settings', { key: 'my_sync_key_enc', value: ciphertext_b64 });
+    await db.put('settings', { key: 'my_sync_key_iv',  value: iv_b64 });
+    log('sync key generated');
+    return pubB64;
+  },
+
+  async getSyncPrivateKey() {
+    if (!this._sessionKey) throw new Error('Keyring locked.');
+    const enc = await db.get('settings', 'my_sync_key_enc');
+    const iv  = await db.get('settings', 'my_sync_key_iv');
+    if (!enc || !iv) throw new Error('No sync key found.');
+    const privB64 = await cryptoOps.decryptPrivateKey(enc.value, iv.value, this._sessionKey);
+    return cryptoOps.importX25519PrivateKeyB64(privB64);
   },
 
   async ensureEncryptionKey() {
@@ -957,7 +1040,7 @@ const ui = {
     if (id === 'keyring')   app.loadKeyring();
     if (id === 'contacts')  app.loadContacts();
     if (id === 'compose')   app.loadComposeKeys();
-    if (id === 'settings')  { app.checkPasskeyStatus(); app.checkEncryptionKeyStatus(); }
+    if (id === 'settings')  { app.checkPasskeyStatus(); app.checkEncryptionKeyStatus(); app.loadDevicesSection(); }
   },
   display(html) {
     const r = document.getElementById('results');
@@ -995,6 +1078,7 @@ const app = {
   _scanInterval: null,
   _qrCycleInterval: null,
   _devRawMode: false,
+  _pendingPairing: null,
 
   async init() {
     if ('serviceWorker' in navigator) {
@@ -1291,6 +1375,70 @@ const app = {
     await this.loadKeyring();
   },
 
+  async loadDevicesSection() {
+    const nameSetting = await db.get('settings', 'my_device_name');
+    const nameInput = document.getElementById('device-name-input');
+    if (nameInput && nameSetting) nameInput.value = nameSetting.value;
+
+    const pubSetting = await db.get('settings', 'my_sync_key_pub');
+    const statusEl   = document.getElementById('sync-key-status');
+    const actionsEl  = document.getElementById('sync-key-actions');
+    const generateEl = document.getElementById('sync-key-generate-ui');
+    const receiveEl  = document.getElementById('sync-receive-wrap');
+
+    if (pubSetting) {
+      const fp = await cryptoOps.fingerprint(pubSetting.value);
+      const code = await cryptoOps.verificationCode(pubSetting.value);
+      if (statusEl) statusEl.innerHTML = `<span class="ok">✓ Sync key active</span> · <span class="mono" style="font-size:11px">${fp}</span> · code <strong>${code}</strong>`;
+      if (actionsEl) actionsEl.style.display = '';
+      if (generateEl) generateEl.style.display = 'none';
+      if (receiveEl) receiveEl.style.display = '';
+    } else {
+      if (statusEl) statusEl.textContent = 'No sync key yet — set up sync to transfer keys between devices.';
+      if (actionsEl) actionsEl.style.display = 'none';
+      if (generateEl) generateEl.style.display = '';
+      if (receiveEl) receiveEl.style.display = 'none';
+    }
+
+    await this._loadPairedDevicesList();
+  },
+
+  async _loadPairedDevicesList() {
+    const devices = await db.getAll('paired_devices');
+    const list = document.getElementById('paired-devices-list');
+    if (!list) return;
+    if (devices.length === 0) { list.innerHTML = ''; return; }
+    list.innerHTML = '<h3 style="margin-bottom:8px">Paired devices</h3>' + devices.map(d => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div>
+          <div style="font-size:13px;font-weight:600">${d.name}</div>
+          <div style="font-size:11px;color:var(--text-muted)" class="mono">${d.fingerprint}</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <button onclick="app.sendSyncTo('${d.id}')">Send keyring</button>
+          <button class="btn-danger" style="font-size:11px;padding:4px 10px" onclick="app.removePairedDevice('${d.id}')">Remove</button>
+        </div>
+      </div>`).join('');
+  },
+
+  async saveDeviceName() {
+    const val = document.getElementById('device-name-input').value.trim();
+    if (!val) { ui.display('<span class="warn">Enter a name for this device.</span>'); return; }
+    await db.put('settings', { key: 'my_device_name', value: val });
+    ui.display('<div class="ok">✓ Device name saved.</div>');
+  },
+
+  async generateSyncKey() {
+    try {
+      await keyring.ensureUnlocked();
+      await keyring.ensureSyncKey();
+      await this.loadDevicesSection();
+      ui.display('<div class="ok">✓ Sync key generated.</div>');
+    } catch(e) {
+      ui.display(`<span class="fail">Could not generate: ${e.message}</span>`);
+    }
+  },
+
   async checkEncryptionKeyStatus() {
     const el = document.getElementById('enc-key-status');
     const genUI = document.getElementById('enc-key-generate-ui');
@@ -1303,6 +1451,211 @@ const app = {
     } else {
       el.textContent = 'No encryption key generated.';
       if (genUI) genUI.style.display = '';
+    }
+  },
+
+  async showPairingQR() {
+    const pub = await db.get('settings', 'my_sync_key_pub');
+    if (!pub) { ui.display('<span class="fail">Generate a sync key first.</span>'); return; }
+    const nameSetting = await db.get('settings', 'my_device_name');
+    const name = nameSetting ? nameSetting.value : 'Unknown device';
+    const code = await cryptoOps.verificationCode(pub.value);
+    const payload = JSON.stringify({ ssd: 'pair-v1', k: pub.value, n: name });
+    await this._showQRModal(
+      'Pair this device',
+      `Show this QR on the other device. Both devices must show the same 6-digit code: ${code}`,
+      payload, null
+    );
+  },
+
+  scanPairingQR() {
+    const scanTitle  = document.querySelector('#scan-modal h3');
+    const scanStatus = document.getElementById('scan-status');
+    if (scanTitle)  scanTitle.textContent  = 'Pair device';
+    if (scanStatus) scanStatus.textContent = 'Scan the pairing QR shown on the other device.';
+    this.startQRScan(async data => {
+      ui.showSection('settings');
+      let packet;
+      try { packet = JSON.parse(data); } catch {
+        ui.display('<span class="fail">Not a valid pairing QR.</span>'); return;
+      }
+      if (packet.ssd !== 'pair-v1' || !packet.k || !packet.n) {
+        ui.display('<span class="fail">Not a pairing QR — use the device\'s "Show pairing QR" option.</span>'); return;
+      }
+      const code = await cryptoOps.verificationCode(packet.k);
+      const fp   = await cryptoOps.fingerprint(packet.k);
+      this._pendingPairing = { k: packet.k, n: packet.n, fp, code };
+      ui.display(`
+        <div class="verify-result">
+          <div style="font-size:15px;font-weight:600;margin-bottom:8px">${packet.n}</div>
+          <div style="font-size:13px;margin-bottom:12px">Verification code: <strong style="font-size:20px;letter-spacing:0.15em">${code}</strong></div>
+          <div style="font-size:12px;color:var(--text-muted);margin-bottom:16px">Check that the other device shows the same code, then confirm.</div>
+          <div style="display:flex;gap:10px">
+            <button onclick="app.confirmPairing()">Codes match — pair</button>
+            <button class="btn-secondary" onclick="app._pendingPairing=null;ui.clear()">Cancel</button>
+          </div>
+        </div>`);
+    });
+  },
+
+  async confirmPairing() {
+    if (!this._pendingPairing) return;
+    const { k, n, fp } = this._pendingPairing;
+    this._pendingPairing = null;
+    const existing = (await db.getAll('paired_devices')).find(d => d.fingerprint === fp);
+    if (existing) { ui.display(`<div class="ok">${n} is already paired.</div>`); await this.loadDevicesSection(); return; }
+    await db.put('paired_devices', { id: window.crypto.randomUUID(), name: n, sync_key_pub: k, fingerprint: fp, paired_at: new Date().toISOString() });
+    ui.display(`<div class="ok">✓ Paired with <strong>${n}</strong>.</div>`);
+    await this.loadDevicesSection();
+  },
+
+  async removePairedDevice(deviceId) {
+    const d = await db.get('paired_devices', deviceId);
+    if (!d || !confirm(`Remove ${d.name} from paired devices?`)) return;
+    await db.del('paired_devices', deviceId);
+    await this.loadDevicesSection();
+  },
+
+  async sendSyncTo(deviceId) {
+    const device = await db.get('paired_devices', deviceId);
+    if (!device) return;
+    ui.display(`<span class="info">Preparing sync for ${device.name}…</span>`);
+    try {
+      await keyring.ensureUnlocked();
+
+      // Collect signing keys — decrypt private keys for transport
+      const myKeyRecs = await db.getAll('my_keys');
+      const keysPayload = await Promise.all(myKeyRecs.map(async rec => {
+        const privB64 = await cryptoOps.decryptPrivateKey(rec.private_key_encrypted, rec.private_key_iv, keyring._sessionKey);
+        return { ...rec, private_key_raw: privB64, private_key_encrypted: undefined, private_key_iv: undefined };
+      }));
+
+      // Collect encryption key
+      const encPub = await db.get('settings', 'my_encryption_key_pub');
+      const encEnc = await db.get('settings', 'my_encryption_key_enc');
+      const encIv  = await db.get('settings', 'my_encryption_key_iv');
+      let encKeyRaw = null;
+      if (encEnc && encIv) {
+        encKeyRaw = await cryptoOps.decryptPrivateKey(encEnc.value, encIv.value, keyring._sessionKey);
+      }
+
+      const payload = {
+        keys: keysPayload,
+        contacts: await db.getAll('contacts'),
+        contact_keys: await db.getAll('contact_keys'),
+        encryption_key_pub: encPub ? encPub.value : null,
+        encryption_key_raw: encKeyRaw,
+        sent_at: new Date().toISOString(),
+      };
+
+      // Ephemeral ECDH → transport key
+      const ephemeral = await cryptoOps.generateX25519Keypair();
+      const ephPubB64 = await cryptoOps.exportX25519PublicKeyB64(ephemeral.publicKey);
+      const recipPubKey = await cryptoOps.importX25519PublicKeyB64(device.sync_key_pub);
+      const transportKey = await cryptoOps.deriveSharedKey(ephemeral.privateKey, recipPubKey);
+
+      const { iv_b64, ct_b64 } = await cryptoOps.encryptJSON(payload, transportKey);
+      const nameSetting = await db.get('settings', 'my_device_name');
+      const packet = JSON.stringify({
+        ssd: 'sync-v1',
+        to: device.fingerprint,
+        from: nameSetting ? nameSetting.value : 'Unknown',
+        ep: ephPubB64,
+        iv: iv_b64,
+        ct: ct_b64,
+      });
+
+      log('sync packet bytes:', packet.length);
+      await navigator.clipboard.writeText(packet);
+      ui.clear();
+      ui.display(`<div class="ok">✓ Sync packet copied to clipboard (${Math.round(packet.length/1024)}KB).<br>Paste it on <strong>${device.name}</strong> and tap "Receive from clipboard".</div>`);
+      if (navigator.share) {
+        try { await navigator.share({ text: packet, title: 'SSD keyring sync' }); } catch {}
+      }
+    } catch(e) {
+      ui.clear();
+      ui.display(`<span class="fail">Send failed: ${e.message}</span>`);
+      console.error(e);
+    }
+  },
+
+  async receiveSync() {
+    ui.display('<span class="info">Reading clipboard…</span>');
+    let text;
+    try { text = await navigator.clipboard.readText(); }
+    catch { ui.clear(); ui.display('<span class="fail">Could not read clipboard — grant permission and try again.</span>'); return; }
+
+    let packet;
+    try { packet = JSON.parse(text); } catch {
+      ui.clear(); ui.display('<span class="fail">Clipboard does not contain a sync packet.</span>'); return;
+    }
+    if (packet.ssd !== 'sync-v1' || !packet.ep || !packet.iv || !packet.ct) {
+      ui.clear(); ui.display('<span class="fail">Not a valid SSD sync packet.</span>'); return;
+    }
+
+    // Check it's addressed to us
+    const myPub = await db.get('settings', 'my_sync_key_pub');
+    if (!myPub) { ui.clear(); ui.display('<span class="fail">No sync key on this device — set up sync first.</span>'); return; }
+    const myFp = await cryptoOps.fingerprint(myPub.value);
+    if (packet.to !== myFp) {
+      ui.clear(); ui.display(`<span class="warn">This sync packet is addressed to a different device (${packet.to}), not this one (${myFp}).</span>`); return;
+    }
+
+    ui.clear();
+    ui.display(`<div class="info">Sync packet from <strong>${packet.from || 'unknown'}</strong>. Authenticate to import.</div>`);
+    try {
+      await keyring.ensureUnlocked();
+      const syncPrivKey = await keyring.getSyncPrivateKey();
+      const ephPubKey   = await cryptoOps.importX25519PublicKeyB64(packet.ep);
+      const transportKey = await cryptoOps.deriveSharedKey(syncPrivKey, ephPubKey);
+      const payload = await cryptoOps.decryptJSON(packet.iv, packet.ct, transportKey);
+
+      // Import signing keys — re-encrypt with this device's session key
+      let imported = 0, skipped = 0;
+      const existingFps = new Set((await db.getAll('my_keys')).map(k => k.fingerprint));
+      for (const k of (payload.keys || [])) {
+        if (existingFps.has(k.fingerprint)) { skipped++; continue; }
+        const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(k.private_key_raw, keyring._sessionKey);
+        await db.put('my_keys', {
+          id: k.id, name: k.name, fingerprint: k.fingerprint,
+          public_key_b64: k.public_key_b64,
+          private_key_encrypted: ciphertext_b64, private_key_iv: iv_b64,
+          identicon_algorithm: k.identicon_algorithm || 'ssd-identicon-1.0',
+          self_image_b64: k.self_image_b64 || null,
+          created: k.created, expires: k.expires || null,
+          recheck_interval_days: k.recheck_interval_days || null,
+          revocation_hint: k.revocation_hint || null,
+          is_default: k.is_default || false, is_revoked: k.is_revoked || false,
+        });
+        imported++;
+      }
+
+      // Import encryption key if we don't have one
+      if (payload.encryption_key_raw && !await db.get('settings', 'my_encryption_key_pub')) {
+        const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(payload.encryption_key_raw, keyring._sessionKey);
+        await db.put('settings', { key: 'my_encryption_key_pub', value: payload.encryption_key_pub });
+        await db.put('settings', { key: 'my_encryption_key_enc', value: ciphertext_b64 });
+        await db.put('settings', { key: 'my_encryption_key_iv',  value: iv_b64 });
+      }
+
+      // Import contacts (persons + contact_keys) — skip existing fingerprints
+      const existingContactFps = new Set((await db.getAll('contact_keys')).map(k => k.fingerprint));
+      const existingPersonIds  = new Set((await db.getAll('contacts')).map(p => p.id));
+      let cImported = 0;
+      for (const p of (payload.contacts || [])) {
+        if (!existingPersonIds.has(p.id)) await db.put('contacts', p);
+      }
+      for (const k of (payload.contact_keys || [])) {
+        if (!existingContactFps.has(k.fingerprint)) { await db.put('contact_keys', k); cImported++; }
+      }
+
+      ui.clear();
+      ui.display(`<div class="ok">✓ Sync complete — ${imported} key${imported!==1?'s':''} imported${skipped?' ('+skipped+' already here)':''}, ${cImported} contact key${cImported!==1?'s':''} imported.</div>`);
+      await this.loadKeyring();
+    } catch(e) {
+      ui.clear();
+      ui.display(`<span class="fail">Receive failed: ${e.message}</span>`);
+      console.error(e);
     }
   },
 
