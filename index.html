@@ -111,15 +111,21 @@
     .no-webauthn { background: rgba(224,80,80,0.1); border: 1px solid rgba(224,80,80,0.3); border-radius: var(--radius); padding: 14px 16px; font-size: 13px; color: var(--danger); margin-bottom: 20px; }
 
     .section-actions { display:flex; gap:8px; margin-bottom:4px; flex-wrap:wrap; }
-    .contact-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:10px; }
-    .contact-card.quarantined { border-color:rgba(224,80,80,0.4); background:rgba(224,80,80,0.05); }
-    .contact-card-header { display:flex; gap:12px; align-items:flex-start; margin-bottom:12px; }
-    .contact-meta { flex:1; min-width:0; }
-    .contact-name { font-size:14px; font-weight:600; }
-    .contact-detail { font-size:11px; color:var(--text-muted); margin-top:2px; }
-    .contact-actions { display:flex; gap:8px; flex-wrap:wrap; }
-    .contact-actions button { font-size:11px; padding:5px 10px; }
-    .quarantine-label { font-size:11px; color:var(--danger); margin-top:4px; }
+    .person-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px; margin-bottom:12px; }
+    .person-card-header { display:flex; gap:12px; align-items:center; margin-bottom:12px; }
+    .person-name { font-size:15px; font-weight:600; }
+    .person-key-count { font-size:11px; color:var(--text-muted); margin-top:2px; }
+    .key-entry { background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius); padding:10px 12px; margin-bottom:8px; }
+    .key-entry:last-child { margin-bottom:0; }
+    .key-entry.quarantined { border-color:rgba(224,80,80,0.4); background:rgba(224,80,80,0.05); }
+    .key-entry-header { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:6px; }
+    .key-entry-name { font-size:13px; font-weight:600; }
+    .key-entry-fp { font-family:var(--mono); font-size:11px; color:var(--text-muted); }
+    .key-entry-meta { font-size:11px; color:var(--text-muted); margin-bottom:6px; }
+    .key-entry-actions { display:flex; gap:6px; flex-wrap:wrap; }
+    .key-entry-actions button { font-size:11px; padding:4px 10px; }
+    .quarantine-label { font-size:11px; color:var(--danger); margin-top:2px; }
+    .person-picker { background:var(--surface); border:1px solid var(--primary); border-radius:var(--radius); padding:16px; margin-top:16px; }
     .modal-overlay { position:fixed; inset:0; z-index:200; align-items:center; justify-content:center; }
     .modal-backdrop { position:absolute; inset:0; background:rgba(0,0,0,0.75); }
     .modal-box { position:relative; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:24px; max-width:340px; width:92%; text-align:center; box-shadow:var(--shadow); }
@@ -255,6 +261,25 @@
         <a href="#" class="cancel-link" onclick="app.hidePasteImport();return false">Cancel</a>
       </div>
     </div>
+    <div id="person-picker" class="person-picker" style="display:none">
+      <h3 style="margin-bottom:12px;font-size:13px">Who is this key from?</h3>
+      <div id="person-picker-existing" style="display:none">
+        <div class="form-group">
+          <label>Link to existing contact</label>
+          <select id="person-picker-select" onchange="app._onPersonPickerSelect()">
+            <option value="">— Add as new person —</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group" id="person-picker-name-group">
+        <label id="person-picker-name-label">Their name</label>
+        <input id="person-picker-name" type="text" placeholder="What do you call this person?">
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:4px">
+        <button onclick="app.confirmPersonPick()">Add to contacts</button>
+        <a href="#" class="cancel-link" onclick="app.cancelPersonPick();return false">Cancel</a>
+      </div>
+    </div>
     <div id="contacts-list" style="margin-top:20px"></div>
     <div id="quarantine-toggle-bar" style="display:none;margin-top:28px">
       <button class="btn-secondary" id="quarantine-toggle-btn" onclick="app.toggleQuarantine()">Show quarantined keys</button>
@@ -342,7 +367,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v19';
+const APP_VERSION = 'ssd-v20';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -361,13 +386,36 @@ const db = {
   async init() {
     if (this._db) return this._db;
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('ssd-keyring', 1);
+      const req = indexedDB.open('ssd-keyring', 2);
       req.onupgradeneeded = e => {
         const idb = e.target.result;
-        for (const store of ['my_keys', 'contact_keys', 'artifacts', 'settings']) {
-          if (!idb.objectStoreNames.contains(store)) {
-            const keyPath = store === 'settings' ? 'key' : 'id';
-            idb.createObjectStore(store, { keyPath });
+        const tx  = e.target.transaction;
+
+        if (e.oldVersion < 1) {
+          for (const store of ['my_keys', 'contact_keys', 'artifacts', 'settings']) {
+            idb.createObjectStore(store, { keyPath: store === 'settings' ? 'key' : 'id' });
+          }
+        }
+
+        if (e.oldVersion < 2) {
+          if (!idb.objectStoreNames.contains('contacts')) {
+            idb.createObjectStore('contacts', { keyPath: 'id' });
+          }
+          // Migrate existing contact_keys: create a person record for each
+          if (e.oldVersion >= 1) {
+            const contactsStore = tx.objectStore('contacts');
+            tx.objectStore('contact_keys').openCursor().onsuccess = function(ev) {
+              const cursor = ev.target.result;
+              if (!cursor) return;
+              const rec = cursor.value;
+              if (!rec.person_id) {
+                const personId = crypto.randomUUID();
+                contactsStore.add({ id: personId, local_name: rec.name, notes: null,
+                  created: rec.received_at || new Date().toISOString(), external_id: null });
+                cursor.update({ ...rec, person_id: personId });
+              }
+              cursor.continue();
+            };
           }
         }
       };
@@ -1243,52 +1291,80 @@ const app = {
   },
 
   async loadContacts() {
-    const all = await db.getAll('contact_keys');
-    const active = all.filter(c => !c.is_quarantined);
-    const quarantined = all.filter(c => c.is_quarantined);
+    const allKeys = await db.getAll('contact_keys');
+    const persons = await db.getAll('contacts');
     const list = document.getElementById('contacts-list');
     if (!list) return;
-    if (active.length === 0) {
+
+    const activeKeys = allKeys.filter(k => !k.is_quarantined);
+    const quarantinedKeys = allKeys.filter(k => k.is_quarantined);
+
+    if (activeKeys.length === 0) {
       list.innerHTML = '<div class="empty-state"><p>No contacts yet.</p><p style="margin-top:8px">Import a key card to add someone.</p></div>';
     } else {
       list.innerHTML = '';
-      for (const c of active) list.appendChild(await this._buildContactCard(c));
+      // Group active keys by person
+      const byPerson = new Map();
+      for (const k of activeKeys) {
+        const pid = k.person_id || '_orphan';
+        if (!byPerson.has(pid)) byPerson.set(pid, []);
+        byPerson.get(pid).push(k);
+      }
+      for (const [pid, keys] of byPerson) {
+        const person = persons.find(p => p.id === pid) || { id: pid, local_name: keys[0].name };
+        list.appendChild(await this._buildPersonCard(person, keys));
+      }
     }
+
     const toggleBar = document.getElementById('quarantine-toggle-bar');
-    if (toggleBar) toggleBar.style.display = quarantined.length > 0 ? '' : 'none';
+    if (toggleBar) toggleBar.style.display = quarantinedKeys.length > 0 ? '' : 'none';
     const qList = document.getElementById('quarantine-list');
     if (qList && qList.style.display !== 'none') {
       qList.innerHTML = '';
-      for (const c of quarantined) qList.appendChild(await this._buildContactCard(c, true));
+      const qByPerson = new Map();
+      for (const k of quarantinedKeys) {
+        const pid = k.person_id || '_orphan';
+        if (!qByPerson.has(pid)) qByPerson.set(pid, []);
+        qByPerson.get(pid).push(k);
+      }
+      for (const [pid, keys] of qByPerson) {
+        const person = persons.find(p => p.id === pid) || { id: pid, local_name: keys[0].name };
+        qList.appendChild(await this._buildPersonCard(person, keys, true));
+      }
     }
   },
 
-  async _buildContactCard(rec, isQuarantined = false) {
+  async _buildPersonCard(person, keys, quarantined = false) {
     const div = document.createElement('div');
-    div.className = 'contact-card' + (isQuarantined ? ' quarantined' : '');
-    const seed = await cryptoOps.identiconSeed(rec.public_key_b64);
+    div.className = 'person-card';
+    const seed = await cryptoOps.identiconSeed(keys[0].public_key_b64);
     const imgSrc = identicon.renderToDataURL(seed, 48);
-    const via = { qr_scan: 'Scanned via QR', paste: 'Pasted', file: 'File import', manual: 'Manual', well_known: 'Web lookup' }[rec.received_via] || rec.received_via || 'Unknown';
-    const when = rec.received_at ? new Date(rec.received_at).toLocaleDateString() : '';
-    const quarantineHtml = isQuarantined
-      ? `<div class="quarantine-label">⚠ Quarantined${rec.quarantine_reason ? ' — ' + rec.quarantine_reason : ''}${rec.quarantined_at ? ' · ' + new Date(rec.quarantined_at).toLocaleDateString() : ''}</div>`
-      : '';
-    const actions = isQuarantined
-      ? `<button class="btn-secondary" onclick="app.showQuarantineDetail('${rec.id}')">View detail</button>
-         <button class="btn-danger" onclick="app.deleteContact('${rec.id}')">Delete</button>`
-      : `<button class="btn-secondary" onclick="app.showContactKeyQR('${rec.id}')">Verify key</button>
-         <button class="btn-secondary" onclick="app.deleteContact('${rec.id}')">Remove</button>`;
-    div.innerHTML = `
-      <div class="contact-card-header">
-        <img src="${imgSrc}" width="48" height="48" class="identicon" alt="">
-        <div class="contact-meta">
-          <div class="contact-name">${rec.name}</div>
-          <div class="contact-detail mono">${rec.fingerprint}</div>
-          <div class="contact-detail">${via}${when ? ' · ' + when : ''}</div>
-          ${quarantineHtml}
+    const keyLabel = keys.length === 1 ? '1 key' : `${keys.length} keys`;
+    const keysHtml = keys.map(k => {
+      const via = { qr_scan: 'QR scan', paste: 'Pasted', file: 'File', manual: 'Manual', well_known: 'Web lookup' }[k.received_via] || k.received_via || 'Unknown';
+      const when = k.received_at ? new Date(k.received_at).toLocaleDateString() : '';
+      const qLabel = quarantined
+        ? `<div class="quarantine-label">⚠ ${k.quarantine_reason || 'Quarantined'}${k.quarantined_at ? ' · ' + new Date(k.quarantined_at).toLocaleDateString() : ''}</div>`
+        : '';
+      const actions = quarantined
+        ? `<button class="btn-secondary" onclick="app.showQuarantineDetail('${k.id}')">Detail</button>
+           <button class="btn-danger" onclick="app.deleteContact('${k.id}')">Delete</button>`
+        : `<button class="btn-secondary" onclick="app.showContactKeyQR('${k.id}')">Verify key</button>
+           <button class="btn-secondary" onclick="app.deleteContact('${k.id}')">Remove</button>`;
+      return `<div class="key-entry${quarantined ? ' quarantined' : ''}">
+        <div class="key-entry-header">
+          <div><div class="key-entry-name">${k.name}</div><div class="key-entry-fp">${k.fingerprint}</div></div>
         </div>
+        <div class="key-entry-meta">${via}${when ? ' · ' + when : ''}${qLabel}</div>
+        <div class="key-entry-actions">${actions}</div>
+      </div>`;
+    }).join('');
+    div.innerHTML = `
+      <div class="person-card-header">
+        <img src="${imgSrc}" width="48" height="48" class="identicon" alt="">
+        <div><div class="person-name">${person.local_name}</div><div class="person-key-count">${keyLabel}</div></div>
       </div>
-      <div class="contact-actions">${actions}</div>`;
+      ${keysHtml}`;
     return div;
   },
 
@@ -1315,11 +1391,9 @@ const app = {
     if (!card.public_key || !card.name) {
       ui.display('<span class="fail">Invalid key card — missing required fields.</span>'); return;
     }
-    // Compute fingerprint from key if not supplied (compact QR format omits it)
     if (!card.fingerprint) {
       card.fingerprint = await cryptoOps.fingerprint(card.public_key);
     }
-    // Full self-signature verification only when self_signed is present (file / paste imports)
     if (card.self_signed) {
       const normalized = {
         chain:                 card.chain                 ?? [],
@@ -1348,14 +1422,62 @@ const app = {
     }
     const existing = (await db.getAll('contact_keys')).find(c => c.fingerprint === card.fingerprint);
     if (existing) {
-      ui.display(`<span class="warn">A key with fingerprint ${card.fingerprint} is already in your contacts (${existing.name}).</span>`); return;
+      ui.display(`<span class="warn">Already have a key with fingerprint ${card.fingerprint}.</span>`); return;
     }
     const myKeys = await db.getAll('my_keys');
     if (myKeys.find(k => k.fingerprint === card.fingerprint)) {
       ui.display('<span class="warn">This is one of your own keys.</span>'); return;
     }
+    this.hidePasteImport();
+    await this._showPersonPicker(card, receivedVia);
+  },
+
+  async _showPersonPicker(card, receivedVia) {
+    this._pendingImport = { card, receivedVia };
+    const persons = await db.getAll('contacts');
+    const sel = document.getElementById('person-picker-select');
+    const existingGroup = document.getElementById('person-picker-existing');
+    const nameInput = document.getElementById('person-picker-name');
+    const nameLabel = document.getElementById('person-picker-name-label');
+    sel.innerHTML = '<option value="">— Add as new person —</option>';
+    persons.forEach(p => sel.appendChild(Object.assign(document.createElement('option'), { value: p.id, textContent: p.local_name })));
+    if (existingGroup) existingGroup.style.display = persons.length ? '' : 'none';
+    nameInput.value = card.name;
+    nameLabel.textContent = persons.length ? 'Or create new person' : 'Their name';
+    document.getElementById('person-picker').style.display = '';
+    nameInput.focus();
+  },
+
+  _onPersonPickerSelect() {
+    const sel = document.getElementById('person-picker-select');
+    const nameGroup = document.getElementById('person-picker-name-group');
+    nameGroup.style.display = sel.value ? 'none' : '';
+  },
+
+  async confirmPersonPick() {
+    if (!this._pendingImport) return;
+    const { card, receivedVia } = this._pendingImport;
+    const sel = document.getElementById('person-picker-select');
+    let personId = sel ? sel.value : '';
+    if (!personId) {
+      const name = document.getElementById('person-picker-name').value.trim();
+      if (!name) { ui.display('<span class="warn">Enter a name for this person.</span>'); return; }
+      personId = window.crypto.randomUUID();
+      await db.put('contacts', { id: personId, local_name: name, notes: null, created: new Date().toISOString(), external_id: null });
+    }
+    await this._saveContactKey(card, receivedVia, personId);
+  },
+
+  cancelPersonPick() {
+    this._pendingImport = null;
+    document.getElementById('person-picker').style.display = 'none';
+    this.loadContacts();
+  },
+
+  async _saveContactKey(card, receivedVia, personId) {
     await db.put('contact_keys', {
-      id: window.crypto.randomUUID(), name: card.name, fingerprint: card.fingerprint,
+      id: window.crypto.randomUUID(), person_id: personId,
+      name: card.name, fingerprint: card.fingerprint,
       public_key_b64: card.public_key, encryption_key_b64: card.encryption_key || null,
       identicon_algorithm: card.identicon_algorithm || 'ssd-identicon-1.0',
       self_image_b64: card.self_image || null, received_via: receivedVia,
@@ -1366,8 +1488,10 @@ const app = {
       countersignatures: [], is_revoked: false, is_quarantined: false,
       quarantined_at: null, quarantine_reason: null,
     });
-    this.hidePasteImport();
-    ui.display(`<div class="ok">✓ Added: <strong>${card.name}</strong> [<span class="mono">${card.fingerprint}</span>]</div>`);
+    const person = await db.get('contacts', personId);
+    this._pendingImport = null;
+    document.getElementById('person-picker').style.display = 'none';
+    ui.display(`<div class="ok">✓ Added: <strong>${card.name}</strong> [<span class="mono">${card.fingerprint}</span>] under <strong>${person.local_name}</strong></div>`);
     await this.loadContacts();
   },
 
@@ -1508,10 +1632,17 @@ const app = {
   async deleteContact(contactId) {
     const rec = await db.get('contact_keys', contactId);
     if (!rec) return;
-    if (!confirm(`Permanently delete ${rec.name} [${rec.fingerprint}]? This cannot be undone.`)) return;
+    const person = rec.person_id ? await db.get('contacts', rec.person_id) : null;
+    const label = person ? `${person.local_name} — ${rec.name}` : rec.name;
+    if (!confirm(`Permanently delete ${label} [${rec.fingerprint}]? This cannot be undone.`)) return;
     await db.del('contact_keys', contactId);
+    // Remove the person record if this was their only key
+    if (rec.person_id) {
+      const remaining = (await db.getAll('contact_keys')).filter(k => k.person_id === rec.person_id);
+      if (remaining.length === 0) await db.del('contacts', rec.person_id);
+    }
     ui.clear();
-    ui.display('<div class="ok">Contact removed.</div>');
+    ui.display('<div class="ok">Key removed.</div>');
     await this.loadContacts();
   },
 
