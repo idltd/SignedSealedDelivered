@@ -238,6 +238,14 @@
       </div>
     </div>
     <div class="settings-block">
+      <h3>Encryption Key</h3>
+      <div id="enc-key-status" style="font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:var(--radius);background:var(--surface-2)">Checking…</div>
+      <div id="enc-key-generate-ui" style="display:none">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">No encryption key yet. Generate one so contacts can send you encrypted documents.</p>
+        <button onclick="app.generateEncryptionKey()">Generate Encryption Key</button>
+      </div>
+    </div>
+    <div class="settings-block">
       <h3>About</h3>
       <p>Signed, Sealed, Delivered · Phase 2 · cache <span id="about-version" class="mono"></span></p>
       <p style="margin-top:8px;color:var(--text-muted);font-size:13px">All cryptography runs in the browser. Nothing sensitive leaves this device.</p>
@@ -367,7 +375,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v20';
+const APP_VERSION = 'ssd-v21';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -672,6 +680,20 @@ const keyring = {
     return this._sessionKey;
   },
 
+  async ensureEncryptionKey() {
+    const existing = await db.get('settings', 'my_encryption_key_pub');
+    if (existing) return existing.value;
+    const kp = await cryptoOps.generateX25519Keypair();
+    const pubB64  = await cryptoOps.exportX25519PublicKeyB64(kp.publicKey);
+    const privB64 = await cryptoOps.exportX25519PrivateKeyB64(kp.privateKey);
+    const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(privB64, this._sessionKey);
+    await db.put('settings', { key: 'my_encryption_key_pub', value: pubB64 });
+    await db.put('settings', { key: 'my_encryption_key_enc', value: ciphertext_b64 });
+    await db.put('settings', { key: 'my_encryption_key_iv',  value: iv_b64 });
+    log('encryption key generated');
+    return pubB64;
+  },
+
   async createKey(name) {
     await this.ensureUnlocked();
     const { publicKey, privateKey } = await cryptoOps.generateKeypair();
@@ -680,23 +702,13 @@ const keyring = {
     const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(privB64, this._sessionKey);
     const fingerprint = await cryptoOps.fingerprint(pubB64);
     const existing = await db.getAll('my_keys');
-    const id = window.crypto.randomUUID();
-    let encPubB64 = null, encPrivEncrypted = null, encPrivIv = null;
-    try {
-      const x25519 = await cryptoOps.generateX25519Keypair();
-      encPubB64 = await cryptoOps.exportX25519PublicKeyB64(x25519.publicKey);
-      const encPrivB64 = await cryptoOps.exportX25519PrivateKeyB64(x25519.privateKey);
-      const enc = await cryptoOps.encryptPrivateKey(encPrivB64, this._sessionKey);
-      encPrivEncrypted = enc.ciphertext_b64; encPrivIv = enc.iv_b64;
-    } catch { /* X25519 not supported */ }
+    // Ensure global encryption key exists (generates it if this is the first key)
+    await this.ensureEncryptionKey();
     const record = {
-      id, name, fingerprint,
+      id: window.crypto.randomUUID(), name, fingerprint,
       public_key_b64: pubB64,
       private_key_encrypted: ciphertext_b64,
       private_key_iv: iv_b64,
-      encryption_public_key_b64: encPubB64,
-      encryption_private_key_encrypted: encPrivEncrypted,
-      encryption_private_key_iv: encPrivIv,
       identicon_algorithm: 'ssd-identicon-1.0',
       self_image_b64: null,
       created: new Date().toISOString(),
@@ -719,9 +731,10 @@ const keyring = {
   async exportKeyCard(keyId) {
     const rec = await db.get('my_keys', keyId);
     if (!rec) throw new Error('Key not found.');
+    const encKeySetting = await db.get('settings', 'my_encryption_key_pub');
     const cardData = {
       chain: [],
-      encryption_key: rec.encryption_public_key_b64 || null,
+      encryption_key: encKeySetting ? encKeySetting.value : null,
       expires: rec.expires,
       fingerprint: rec.fingerprint,
       identicon_algorithm: rec.identicon_algorithm,
@@ -944,7 +957,7 @@ const ui = {
     if (id === 'keyring')   app.loadKeyring();
     if (id === 'contacts')  app.loadContacts();
     if (id === 'compose')   app.loadComposeKeys();
-    if (id === 'settings')  app.checkPasskeyStatus();
+    if (id === 'settings')  { app.checkPasskeyStatus(); app.checkEncryptionKeyStatus(); }
   },
   display(html) {
     const r = document.getElementById('results');
@@ -1278,6 +1291,32 @@ const app = {
     await this.loadKeyring();
   },
 
+  async checkEncryptionKeyStatus() {
+    const el = document.getElementById('enc-key-status');
+    const genUI = document.getElementById('enc-key-generate-ui');
+    if (!el) return;
+    const setting = await db.get('settings', 'my_encryption_key_pub');
+    if (setting) {
+      const fp = await cryptoOps.fingerprint(setting.value);
+      el.innerHTML = `<span class="ok">✓ Encryption key active</span> · <span class="mono" style="font-size:11px">${fp}</span>`;
+      if (genUI) genUI.style.display = 'none';
+    } else {
+      el.textContent = 'No encryption key generated.';
+      if (genUI) genUI.style.display = '';
+    }
+  },
+
+  async generateEncryptionKey() {
+    try {
+      await keyring.ensureUnlocked();
+      await keyring.ensureEncryptionKey();
+      await this.checkEncryptionKeyStatus();
+      ui.display('<div class="ok">✓ Encryption key generated.</div>');
+    } catch(e) {
+      ui.display(`<span class="fail">Could not generate: ${e.message}</span>`);
+    }
+  },
+
   async checkPasskeyStatus() {
     const el = document.getElementById('passkey-status');
     if (!el) return;
@@ -1478,7 +1517,7 @@ const app = {
     await db.put('contact_keys', {
       id: window.crypto.randomUUID(), person_id: personId,
       name: card.name, fingerprint: card.fingerprint,
-      public_key_b64: card.public_key, encryption_key_b64: card.encryption_key || null,
+      public_key_b64: card.public_key,
       identicon_algorithm: card.identicon_algorithm || 'ssd-identicon-1.0',
       self_image_b64: card.self_image || null, received_via: receivedVia,
       received_at: new Date().toISOString(), expires: card.expires || null,
@@ -1488,6 +1527,13 @@ const app = {
       countersignatures: [], is_revoked: false, is_quarantined: false,
       quarantined_at: null, quarantine_reason: null,
     });
+    // Store encryption key on the person record (one per person, not per key)
+    if (card.encryption_key) {
+      const person = await db.get('contacts', personId);
+      if (person && !person.encryption_key_pub) {
+        await db.put('contacts', { ...person, encryption_key_pub: card.encryption_key });
+      }
+    }
     const person = await db.get('contacts', personId);
     this._pendingImport = null;
     document.getElementById('person-picker').style.display = 'none';
