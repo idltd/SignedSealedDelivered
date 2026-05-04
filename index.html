@@ -339,7 +339,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v12';
+const APP_VERSION = 'ssd-v18';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -1313,33 +1313,39 @@ const app = {
 
   async importContactCard(card, receivedVia = 'paste') {
     ui.clear();
-    if (!card.public_key || !card.fingerprint || !card.self_signed || !card.name) {
+    if (!card.public_key || !card.name) {
       ui.display('<span class="fail">Invalid key card — missing required fields.</span>'); return;
     }
-    // Normalise: fill defaults so signature verification works on compact QR payloads
-    const normalized = {
-      chain:                 card.chain                 ?? [],
-      encryption_key:        card.encryption_key        ?? null,
-      expires:               card.expires               ?? null,
-      fingerprint:           card.fingerprint,
-      identicon_algorithm:   card.identicon_algorithm   ?? 'ssd-identicon-1.0',
-      issued:                card.issued,
-      name:                  card.name,
-      public_key:            card.public_key,
-      recheck_interval_days: card.recheck_interval_days ?? 90,
-      revocation_hint:       card.revocation_hint       ?? null,
-      self_image:            card.self_image            ?? null,
-      self_signed:           card.self_signed,
-      signing_algorithm:     card.signing_algorithm     ?? 'Ed25519',
-      version:               card.version               ?? '1.0',
-    };
-    const valid = await keyring.verifyKeyCard(normalized);
-    if (!valid) {
-      ui.display('<span class="fail">Key card signature is invalid — this may have been tampered with.</span>'); return;
+    // Compute fingerprint from key if not supplied (compact QR format omits it)
+    if (!card.fingerprint) {
+      card.fingerprint = await cryptoOps.fingerprint(card.public_key);
     }
-    const fp = await cryptoOps.fingerprint(card.public_key);
-    if (fp !== card.fingerprint) {
-      ui.display('<span class="fail">Fingerprint does not match the public key — corrupt key card.</span>'); return;
+    // Full self-signature verification only when self_signed is present (file / paste imports)
+    if (card.self_signed) {
+      const normalized = {
+        chain:                 card.chain                 ?? [],
+        encryption_key:        card.encryption_key        ?? null,
+        expires:               card.expires               ?? null,
+        fingerprint:           card.fingerprint,
+        identicon_algorithm:   card.identicon_algorithm   ?? 'ssd-identicon-1.0',
+        issued:                card.issued,
+        name:                  card.name,
+        public_key:            card.public_key,
+        recheck_interval_days: card.recheck_interval_days ?? 90,
+        revocation_hint:       card.revocation_hint       ?? null,
+        self_image:            card.self_image            ?? null,
+        self_signed:           card.self_signed,
+        signing_algorithm:     card.signing_algorithm     ?? 'Ed25519',
+        version:               card.version               ?? '1.0',
+      };
+      const valid = await keyring.verifyKeyCard(normalized);
+      if (!valid) {
+        ui.display('<span class="fail">Key card signature is invalid — this may have been tampered with.</span>'); return;
+      }
+      const fp = await cryptoOps.fingerprint(card.public_key);
+      if (fp !== card.fingerprint) {
+        ui.display('<span class="fail">Fingerprint does not match the public key — corrupt key card.</span>'); return;
+      }
     }
     const existing = (await db.getAll('contact_keys')).find(c => c.fingerprint === card.fingerprint);
     if (existing) {
@@ -1371,20 +1377,10 @@ const app = {
       await keyring.ensureUnlocked();
       const card = await keyring.exportKeyCard(keyId);
 
-      // Compact payload: omit fields that are null or have well-known defaults
-      const compact = { name: card.name, fingerprint: card.fingerprint, public_key: card.public_key, issued: card.issued, self_signed: card.self_signed };
-      if (card.encryption_key)   compact.encryption_key = card.encryption_key;
-      if (card.expires)          compact.expires = card.expires;
-      if (card.revocation_hint)  compact.revocation_hint = card.revocation_hint;
-      if (card.self_image)       compact.self_image = card.self_image;
-      if (card.chain && card.chain.length) compact.chain = card.chain;
-      if (card.recheck_interval_days !== 90) compact.recheck_interval_days = card.recheck_interval_days;
-
-      const payloads = [
-        { payload: JSON.stringify(compact),  label: 'compact' },
-        { payload: JSON.stringify(card),     label: 'full'    },
-      ];
-      await this._showQRModal('Your key card', `Share this so contacts can verify your identity. Fingerprint: ${card.fingerprint}`, payloads, null);
+      // Minimal QR payload — name and public key only; fingerprint computed on import
+      const qrPayload = JSON.stringify({ ssd: 'qr1', n: card.name, k: card.public_key });
+      log('QR payload bytes:', qrPayload.length);
+      await this._showQRModal('Your key card', `Share this so contacts can verify your identity. Fingerprint: ${card.fingerprint}`, qrPayload, null);
     } catch(e) {
       ui.display(`<span class="fail">Could not generate QR: ${e.message}</span>`);
       console.error(e);
@@ -1430,7 +1426,8 @@ const app = {
       log('QR render — slot', idx + 1, 'of', payloads.length, '— bytes:', payload.length, label ? '(' + label + ')' : '');
       canvas.innerHTML = '';
       try {
-        new QRCode(canvas, { text: payload, width: 256, height: 256, colorDark: '#000000', colorLight: '#ffffff' });
+        const qrSize = Math.min(window.innerWidth - 48, 400);
+        new QRCode(canvas, { text: payload, width: qrSize, height: qrSize, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.L });
       } catch(e) {
         log('QR generation error:', e.message);
         ui.display(`<span class="fail">QR generation failed: ${e.message}</span>`);
@@ -1579,6 +1576,7 @@ const app = {
         log('scanner: jsQR fallback');
       }
       status.textContent = 'Point at a QR code…';
+      this._scanFrame = 0;
       requestAnimationFrame(() => this._doScanLoop());
     } catch(e) {
       log('camera error:', e.message);
@@ -1589,44 +1587,84 @@ const app = {
   _doScanLoop() {
     if (!this._scanRunning) return;
     const video = document.getElementById('scan-video');
-    if (!video || video.readyState < 2) {
+    this._scanFrame = (this._scanFrame || 0) + 1;
+    const f = this._scanFrame;
+
+    if (!video) { log('scan abort: no video element'); return; }
+
+    if (video.readyState < 2) {
+      if (f === 1 || f % 60 === 0) log('scan f'+f+' waiting — readyState', video.readyState);
       requestAnimationFrame(() => this._doScanLoop());
       return;
     }
+
+    const w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) {
+      if (f % 60 === 0) log('scan f'+f+' — no dimensions, readyState', video.readyState);
+      requestAnimationFrame(() => this._doScanLoop());
+      return;
+    }
+
+    const canvas = document.getElementById('scan-canvas');
+    if (!canvas) { log('scan abort: no canvas'); return; }
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, w, h);
+
+    // Sample center + corners to verify we have real image data
+    if (f === 1 || f % 60 === 0) {
+      const c  = ctx.getImageData(Math.floor(w/2), Math.floor(h/2), 1, 1).data;
+      const tl = ctx.getImageData(10, 10, 1, 1).data;
+      const br = ctx.getImageData(w-10, h-10, 1, 1).data;
+      log('scan f'+f+' '+w+'×'+h+' readyState '+video.readyState
+        +' | center('+c[0]+','+c[1]+','+c[2]+')'
+        +' tl('+tl[0]+','+tl[1]+','+tl[2]+')'
+        +' br('+br[0]+','+br[1]+','+br[2]+')');
+    }
+
     if (this._barcodeDetector) {
-      this._barcodeDetector.detect(video)
+      this._barcodeDetector.detect(canvas)
         .then(codes => {
           if (!this._scanRunning) return;
           if (codes.length) {
-            log('decoded:', codes[0].rawValue.slice(0, 80));
+            log('decoded (BarcodeDetector):', codes[0].rawValue.slice(0, 80));
             this.stopQRScan();
             this._handleScannedQR(codes[0].rawValue);
-          } else {
-            requestAnimationFrame(() => this._doScanLoop());
+            return;
           }
+          // BarcodeDetector found nothing — try jsQR on same captured frame
+          if (typeof jsQR !== 'undefined') {
+            const img = ctx.getImageData(0, 0, w, h);
+            const code = jsQR(img.data, w, h);
+            if (code) {
+              log('decoded (jsQR):', code.data.slice(0, 80));
+              this.stopQRScan();
+              this._handleScannedQR(code.data);
+              return;
+            }
+          }
+          if (f % 60 === 0) log('scan f'+f+' — both detectors: no code');
+          requestAnimationFrame(() => this._doScanLoop());
         })
-        .catch(() => requestAnimationFrame(() => this._doScanLoop()));
+        .catch(e => { log('detect err f'+f+':', e.message); requestAnimationFrame(() => this._doScanLoop()); });
       return;
     }
-    // jsQR fallback for browsers without BarcodeDetector
-    const canvas = document.getElementById('scan-canvas');
-    if (!canvas) return;
-    const w = video.videoWidth, h = video.videoHeight;
-    if (w && h) {
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, w, h);
-      if (typeof jsQR !== 'undefined') {
-        const img = ctx.getImageData(0, 0, w, h);
-        const code = jsQR(img.data, img.width, img.height);
-        if (code) {
-          log('decoded:', code.data.slice(0, 80));
-          this.stopQRScan();
-          this._handleScannedQR(code.data);
-          return;
-        }
+
+    // jsQR only (no BarcodeDetector)
+    if (typeof jsQR !== 'undefined') {
+      const img = ctx.getImageData(0, 0, w, h);
+      const code = jsQR(img.data, w, h);
+      if (code) {
+        log('decoded (jsQR):', code.data.slice(0, 80));
+        this.stopQRScan();
+        this._handleScannedQR(code.data);
+        return;
       }
+    } else {
+      log('scan abort: jsQR not available and no BarcodeDetector');
+      return;
     }
+    if (f % 60 === 0) log('scan f'+f+' — jsQR: no code');
     requestAnimationFrame(() => this._doScanLoop());
   },
 
@@ -1652,6 +1690,10 @@ const app = {
       ui.showSection('contacts');
       ui.display('<span class="fail">QR code is not a valid key card.</span>');
       return;
+    }
+    // Compact QR format: {ssd:'qr1', n:name, k:public_key}
+    if (card.ssd === 'qr1') {
+      card = { name: card.n, public_key: card.k };
     }
     ui.showSection('contacts');
     await this.importContactCard(card, 'qr_scan');
