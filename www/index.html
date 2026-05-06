@@ -145,6 +145,7 @@
     <button class="nav-btn" data-section="contacts" onclick="ui.showSection('contacts')">Contacts</button>
     <button class="nav-btn" data-section="compose" onclick="ui.showSection('compose')">Sign</button>
     <button class="nav-btn" data-section="verify" onclick="ui.showSection('verify')">Verify</button>
+    <button class="nav-btn" data-section="docs" onclick="ui.showSection('docs')">Documents</button>
     <button class="nav-btn" data-section="settings" onclick="ui.showSection('settings')">Settings</button>
     <button class="nav-btn" data-section="dev" onclick="ui.showSection('dev')">Dev</button>
   </nav>
@@ -218,6 +219,12 @@
          onclick="document.getElementById('verify-file').click()">
       Drop a .sealed file here, or click to select
     </div>
+  </section>
+
+  <!-- DOCUMENTS -->
+  <section id="docs" class="section">
+    <h2>Documents</h2>
+    <div id="docs-list"></div>
   </section>
 
   <!-- SETTINGS -->
@@ -416,7 +423,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v27';
+const APP_VERSION = 'ssd-v28';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -1090,6 +1097,7 @@ const ui = {
     if (id === 'keyring')   app.loadKeyring();
     if (id === 'contacts')  app.loadContacts();
     if (id === 'compose')   app.loadComposeKeys();
+    if (id === 'docs')      app.loadDocs();
     if (id === 'settings')  { app.checkPasskeyStatus(); app.checkEncryptionKeyStatus(); app.loadDevicesSection(); }
   },
   display(html) {
@@ -1871,6 +1879,54 @@ const app = {
     const replaceUI  = document.getElementById('passkey-replace-ui');
     if (registerUI) registerUI.style.display = cred ? 'none' : '';
     if (replaceUI)  replaceUI.style.display  = cred ? ''     : 'none';
+  },
+
+  async loadDocs() {
+    const list = document.getElementById('docs-list');
+    if (!list) return;
+    const artifacts = (await db.getAll('artifacts')).sort((a, b) => b.created.localeCompare(a.created));
+    if (!artifacts.length) {
+      list.innerHTML = '<div class="empty-state"><p>No signed documents yet.</p></div>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const a of artifacts) {
+      const div = document.createElement('div');
+      div.className = 'key-card';
+      const date    = new Date(a.created).toLocaleString();
+      const encBadge = a.encrypted ? '<span class="badge badge-primary" style="margin-left:6px">Encrypted</span>' : '';
+      const dirLabel = a.direction === 'sent' ? 'Signed' : 'Received';
+      div.innerHTML = `
+        <div class="key-card-header" style="align-items:flex-start">
+          <div class="key-card-meta" style="flex:1">
+            <div class="key-name">${dirLabel}${encBadge}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">${date}</div>
+            <div style="font-size:12px;margin-top:4px;color:var(--text-muted)">${a.summary || '—'}</div>
+            <div class="key-fp" style="margin-top:4px">${a.fingerprint}</div>
+          </div>
+        </div>
+        <div class="key-card-actions">
+          <button class="btn-secondary" style="color:var(--danger)" onclick="app.deleteDoc('${a.id}')">Delete</button>
+        </div>`;
+      list.appendChild(div);
+    }
+  },
+
+  async deleteDoc(id) {
+    const a = await db.get('artifacts', id);
+    if (!a) return;
+    if (!confirm('Delete this document record? The .sealed file you downloaded is not affected.')) return;
+    await db.del('artifacts', id);
+    if (a.opfs_path) {
+      try {
+        const root = await navigator.storage.getDirectory();
+        const parts = a.opfs_path.split('/').filter(Boolean);
+        let dir = root;
+        for (const p of parts.slice(0, -1)) dir = await dir.getDirectoryHandle(p, { create: false });
+        await dir.removeEntry(parts[parts.length - 1]);
+      } catch { /* OPFS file may already be gone */ }
+    }
+    await this.loadDocs();
   },
 
   async loadContacts() {
