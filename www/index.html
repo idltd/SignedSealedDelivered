@@ -1363,40 +1363,41 @@ const app = {
       let wasEncrypted = false;
       let outerSigStatus = null;
 
+      // Try to detect an encrypted envelope — only catch JSON parse failures here.
+      // Any error inside the sealed-enc-v1 block propagates up naturally.
+      let envelope = null;
       try {
-        const text = new TextDecoder().decode(rawBytes);
-        const envelope = JSON.parse(text);
-        if (envelope.ssd === 'sealed-enc-v1') {
-          // Verify outer signature first (no decryption needed)
-          if (envelope.outer_sig && envelope.signer_fingerprint) {
-            const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: envelope.signed_at, signer_fingerprint: envelope.signer_fingerprint, manifest_hash: envelope.manifest_hash });
-            const allKeys = [...await db.getAll('my_keys'), ...await db.getAll('contact_keys')];
-            const signerKey = allKeys.find(k => k.fingerprint === envelope.signer_fingerprint);
-            if (signerKey) {
-              const pubKey = await cryptoOps.importPublicKeyB64(signerKey.public_key_b64);
-              const valid  = await cryptoOps.verify(pubKey, envelope.outer_sig, new TextEncoder().encode(outerMeta));
-              outerSigStatus = valid ? { ok: true, name: signerKey.name, fp: signerKey.fingerprint } : { ok: false };
-            } else {
-              outerSigStatus = { ok: null, fp: envelope.signer_fingerprint };
-            }
+        const parsed = JSON.parse(new TextDecoder().decode(rawBytes));
+        if (parsed.ssd === 'sealed-enc-v1') envelope = parsed;
+      } catch { /* not JSON — treat as plain ZIP */ }
+
+      if (envelope) {
+        // Verify outer signature (no decryption needed)
+        if (envelope.outer_sig && envelope.signer_fingerprint) {
+          const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: envelope.signed_at, signer_fingerprint: envelope.signer_fingerprint, manifest_hash: envelope.manifest_hash });
+          const allKeys = [...await db.getAll('my_keys'), ...await db.getAll('contact_keys')];
+          const signerKey = allKeys.find(k => k.fingerprint === envelope.signer_fingerprint);
+          if (signerKey) {
+            const pubKey = await cryptoOps.importPublicKeyB64(signerKey.public_key_b64);
+            const valid  = await cryptoOps.verify(pubKey, envelope.outer_sig, new TextEncoder().encode(outerMeta));
+            outerSigStatus = valid ? { ok: true, name: signerKey.name, fp: signerKey.fingerprint } : { ok: false };
+          } else {
+            outerSigStatus = { ok: null, fp: envelope.signer_fingerprint };
           }
-
-          // Find our recipient slot and decrypt
-          const myPubSetting = await db.get('settings', 'my_encryption_key_pub');
-          const slot = myPubSetting && envelope.recipients?.find(r => r.for_key === myPubSetting.value);
-          if (!slot) throw new Error('This document is not addressed to this device\'s encryption key.');
-
-          ui.display('Encrypted document — authenticate to open…');
-          await keyring.ensureUnlocked();
-          const myPriv   = await keyring.getEncryptionPrivateKey();
-          const dekBytes = await cryptoOps.unwrapDEK(slot, myPriv);
-          const dekKey   = await cryptoOps.importAESKey(dekBytes);
-          zipBytes     = await cryptoOps.decryptBytes(envelope.iv, envelope.ct, dekKey);
-          wasEncrypted = true;
         }
-      } catch (e) {
-        if (e.message.includes('not addressed to')) throw e;
-        // Not JSON / not an envelope — treat as plain ZIP
+
+        // Find our recipient slot and decrypt
+        const myPubSetting = await db.get('settings', 'my_encryption_key_pub');
+        const slot = myPubSetting && envelope.recipients?.find(r => r.for_key === myPubSetting.value);
+        if (!slot) throw new Error('This document is not addressed to this device\'s encryption key.');
+
+        ui.display('Encrypted document — authenticate to open…');
+        await keyring.ensureUnlocked();
+        const myPriv   = await keyring.getEncryptionPrivateKey();
+        const dekBytes = await cryptoOps.unwrapDEK(slot, myPriv);
+        const dekKey   = await cryptoOps.importAESKey(dekBytes);
+        zipBytes     = await cryptoOps.decryptBytes(envelope.iv, envelope.ct, dekKey);
+        wasEncrypted = true;
       }
 
       const unpacked = await artifact.unpack(zipBytes);
