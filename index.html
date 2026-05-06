@@ -267,6 +267,14 @@
       <div id="paired-devices-list"></div>
       <div id="sync-receive-wrap" style="display:none;margin-top:12px">
         <button class="btn-secondary" onclick="app.receiveSync()">Receive from clipboard</button>
+        <div id="sync-paste-area" style="display:none;margin-top:10px">
+          <label style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em">Paste sync packet here</label>
+          <textarea id="sync-paste-text" style="width:100%;min-height:80px;margin-top:6px;font-size:11px;font-family:var(--mono)" placeholder="Paste the text sent from the other device…"></textarea>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <button onclick="app.processSyncPaste()">Import</button>
+            <button class="btn-secondary" onclick="app.hideSyncPaste()">Cancel</button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="settings-block">
@@ -1580,37 +1588,50 @@ const app = {
   },
 
   async receiveSync() {
-    ui.display('<span class="info">Reading clipboard…</span>');
-    let text;
-    try { text = await navigator.clipboard.readText(); }
-    catch { ui.clear(); ui.display('<span class="fail">Could not read clipboard — grant permission and try again.</span>'); return; }
+    // Try programmatic clipboard read; fall back to paste area on mobile
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && text.includes('sync-v1')) { await this._processSyncPacket(text); return; }
+    } catch { /* clipboard read blocked — show paste area instead */ }
+    const pasteArea = document.getElementById('sync-paste-area');
+    const pasteText = document.getElementById('sync-paste-text');
+    if (pasteArea) { pasteArea.style.display = ''; if (pasteText) { pasteText.value = ''; pasteText.focus(); } }
+  },
 
+  hideSyncPaste() {
+    const el = document.getElementById('sync-paste-area');
+    if (el) el.style.display = 'none';
+  },
+
+  async processSyncPaste() {
+    const text = (document.getElementById('sync-paste-text')?.value || '').trim();
+    if (!text) { ui.display('<span class="warn">Paste the sync text first.</span>'); return; }
+    this.hideSyncPaste();
+    await this._processSyncPacket(text);
+  },
+
+  async _processSyncPacket(text) {
     let packet;
     try { packet = JSON.parse(text); } catch {
-      ui.clear(); ui.display('<span class="fail">Clipboard does not contain a sync packet.</span>'); return;
+      ui.display('<span class="fail">Not a valid sync packet — check you copied the full text.</span>'); return;
     }
     if (packet.ssd !== 'sync-v1' || !packet.ep || !packet.iv || !packet.ct) {
-      ui.clear(); ui.display('<span class="fail">Not a valid SSD sync packet.</span>'); return;
+      ui.display('<span class="fail">Not a valid SSD sync packet.</span>'); return;
     }
-
-    // Check it's addressed to us
     const myPub = await db.get('settings', 'my_sync_key_pub');
-    if (!myPub) { ui.clear(); ui.display('<span class="fail">No sync key on this device — set up sync first.</span>'); return; }
+    if (!myPub) { ui.display('<span class="fail">No sync key on this device — set up sync first.</span>'); return; }
     const myFp = await cryptoOps.fingerprint(myPub.value);
     if (packet.to !== myFp) {
-      ui.clear(); ui.display(`<span class="warn">This sync packet is addressed to a different device (${packet.to}), not this one (${myFp}).</span>`); return;
+      ui.display(`<span class="warn">This packet is for device ${packet.to}, not this one (${myFp}).</span>`); return;
     }
-
-    ui.clear();
     ui.display(`<div class="info">Sync packet from <strong>${packet.from || 'unknown'}</strong>. Authenticate to import.</div>`);
     try {
       await keyring.ensureUnlocked();
-      const syncPrivKey = await keyring.getSyncPrivateKey();
-      const ephPubKey   = await cryptoOps.importX25519PublicKeyB64(packet.ep);
+      const syncPrivKey  = await keyring.getSyncPrivateKey();
+      const ephPubKey    = await cryptoOps.importX25519PublicKeyB64(packet.ep);
       const transportKey = await cryptoOps.deriveSharedKey(syncPrivKey, ephPubKey);
-      const payload = await cryptoOps.decryptJSON(packet.iv, packet.ct, transportKey);
+      const payload      = await cryptoOps.decryptJSON(packet.iv, packet.ct, transportKey);
 
-      // Import signing keys — re-encrypt with this device's session key
       let imported = 0, skipped = 0;
       const existingFps = new Set((await db.getAll('my_keys')).map(k => k.fingerprint));
       for (const k of (payload.keys || [])) {
@@ -1629,16 +1650,12 @@ const app = {
         });
         imported++;
       }
-
-      // Import encryption key if we don't have one
       if (payload.encryption_key_raw && !await db.get('settings', 'my_encryption_key_pub')) {
         const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(payload.encryption_key_raw, keyring._sessionKey);
         await db.put('settings', { key: 'my_encryption_key_pub', value: payload.encryption_key_pub });
         await db.put('settings', { key: 'my_encryption_key_enc', value: ciphertext_b64 });
         await db.put('settings', { key: 'my_encryption_key_iv',  value: iv_b64 });
       }
-
-      // Import contacts (persons + contact_keys) — skip existing fingerprints
       const existingContactFps = new Set((await db.getAll('contact_keys')).map(k => k.fingerprint));
       const existingPersonIds  = new Set((await db.getAll('contacts')).map(p => p.id));
       let cImported = 0;
@@ -1648,13 +1665,12 @@ const app = {
       for (const k of (payload.contact_keys || [])) {
         if (!existingContactFps.has(k.fingerprint)) { await db.put('contact_keys', k); cImported++; }
       }
-
       ui.clear();
       ui.display(`<div class="ok">✓ Sync complete — ${imported} key${imported!==1?'s':''} imported${skipped?' ('+skipped+' already here)':''}, ${cImported} contact key${cImported!==1?'s':''} imported.</div>`);
       await this.loadKeyring();
     } catch(e) {
       ui.clear();
-      ui.display(`<span class="fail">Receive failed: ${e.message}</span>`);
+      ui.display(`<span class="fail">Import failed: ${e.message}</span>`);
       console.error(e);
     }
   },
