@@ -413,7 +413,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v25';
+const APP_VERSION = 'ssd-v26';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -1421,7 +1421,8 @@ const app = {
       ui.displayVerification(result);
     } catch (e) {
       ui.clear();
-      ui.display(`<span class="fail">Verification failed: ${e.message}</span>`);
+      ui.display(`<span class="fail">Verification failed: ${e.name}: ${e.message}</span>`);
+      log('verify-error', e.name, e.message, e.stack);
       console.error(e);
     }
   },
