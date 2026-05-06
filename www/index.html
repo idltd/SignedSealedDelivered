@@ -258,7 +258,7 @@
         <button onclick="app.generateEncryptionKey()">Generate Encryption Key</button>
       </div>
       <div id="enc-key-reset-ui" style="display:none;margin-top:10px">
-        <button class="btn-secondary" onclick="app.resetEncryptionKey()" style="color:var(--danger)">Reset Encryption Key…</button>
+        <button class="btn-secondary" onclick="app.resetEncryptionKey()">Rotate Encryption Key…</button>
       </div>
     </div>
     <div class="settings-block">
@@ -423,7 +423,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v28';
+const APP_VERSION = 'ssd-v29';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -442,7 +442,7 @@ const db = {
   async init() {
     if (this._db) return this._db;
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open('ssd-keyring', 3);
+      const req = indexedDB.open('ssd-keyring', 4);
       req.onupgradeneeded = e => {
         const idb = e.target.result;
         const tx  = e.target.transaction;
@@ -463,6 +463,10 @@ const db = {
           if (!idb.objectStoreNames.contains('paired_devices')) {
             idb.createObjectStore('paired_devices', { keyPath: 'id' });
           }
+        }
+
+        if (e.oldVersion < 4) {
+          idb.createObjectStore('encryption_keys', { keyPath: 'pub' });
         }
 
         if (e.oldVersion < 2) {
@@ -811,25 +815,27 @@ const keyring = {
     return cryptoOps.importX25519PrivateKeyB64(privB64);
   },
 
-  async getEncryptionPrivateKey() {
+  async getEncryptionPrivateKey(pubB64) {
     if (!this._sessionKey) throw new Error('Keyring locked.');
-    const enc = await db.get('settings', 'my_encryption_key_enc');
-    const iv  = await db.get('settings', 'my_encryption_key_iv');
-    if (!enc || !iv) throw new Error('No encryption key found.');
-    const privB64 = await cryptoOps.decryptPrivateKey(enc.value, iv.value, this._sessionKey);
+    const rec = await db.get('encryption_keys', pubB64);
+    if (!rec) throw new Error('No matching encryption key found.');
+    const privB64 = await cryptoOps.decryptPrivateKey(rec.enc, rec.iv, this._sessionKey);
     return cryptoOps.importX25519PrivateKeyB64(privB64);
   },
 
   async ensureEncryptionKey() {
-    const existing = await db.get('settings', 'my_encryption_key_pub');
-    if (existing) return existing.value;
+    const allKeys = await db.getAll('encryption_keys');
+    const current = allKeys.find(k => k.is_current);
+    if (current) {
+      await db.put('settings', { key: 'my_encryption_key_pub', value: current.pub });
+      return current.pub;
+    }
     const kp = await cryptoOps.generateX25519Keypair();
     const pubB64  = await cryptoOps.exportX25519PublicKeyB64(kp.publicKey);
     const privB64 = await cryptoOps.exportX25519PrivateKeyB64(kp.privateKey);
     const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(privB64, this._sessionKey);
+    await db.put('encryption_keys', { pub: pubB64, enc: ciphertext_b64, iv: iv_b64, created: new Date().toISOString(), is_current: true });
     await db.put('settings', { key: 'my_encryption_key_pub', value: pubB64 });
-    await db.put('settings', { key: 'my_encryption_key_enc', value: ciphertext_b64 });
-    await db.put('settings', { key: 'my_encryption_key_iv',  value: iv_b64 });
     log('encryption key generated');
     return pubB64;
   },
@@ -1402,17 +1408,17 @@ const app = {
           }
         }
 
-        // Find our recipient slot and decrypt
-        const myPubSetting = await db.get('settings', 'my_encryption_key_pub');
-        log('dec-5: my enc pub exists:', !!myPubSetting);
-        const slot = myPubSetting && envelope.recipients?.find(r => r.for_key === myPubSetting.value);
+        // Find our recipient slot — search all stored encryption keys (current and retired)
+        const myEncKeys = await db.getAll('encryption_keys');
+        log('dec-5: my enc keys count:', myEncKeys.length);
+        const slot = envelope.recipients?.find(r => myEncKeys.some(k => k.pub === r.for_key));
         log('dec-6: slot found:', !!slot);
-        if (!slot) throw new Error('This document is not addressed to this device\'s encryption key.');
+        if (!slot) throw new Error('This document is not addressed to any of this device\'s encryption keys.');
 
         ui.display('Encrypted document — authenticate to open…');
         await keyring.ensureUnlocked();
-        log('dec-7: unlocked, getting enc private key');
-        const myPriv   = await keyring.getEncryptionPrivateKey();
+        log('dec-7: unlocked, getting enc private key for', slot.for_key.slice(0, 8) + '…');
+        const myPriv   = await keyring.getEncryptionPrivateKey(slot.for_key);
         log('dec-8: got priv key, unwrapping DEK');
         const dekBytes = await cryptoOps.unwrapDEK(slot, myPriv);
         log('dec-9: DEK unwrapped, len:', dekBytes.length);
@@ -1623,26 +1629,36 @@ const app = {
     const genUI   = document.getElementById('enc-key-generate-ui');
     const resetUI = document.getElementById('enc-key-reset-ui');
     if (!el) return;
-    const setting = await db.get('settings', 'my_encryption_key_pub');
-    if (setting) {
-      const fp = await cryptoOps.fingerprint(setting.value);
-      el.innerHTML = `<span class="ok">✓ Encryption key active</span> · <span class="mono" style="font-size:11px">${fp}</span>`;
+    const allKeys     = await db.getAll('encryption_keys');
+    const current     = allKeys.find(k => k.is_current);
+    const retiredCount = allKeys.filter(k => !k.is_current).length;
+    if (current) {
+      const fp = await cryptoOps.fingerprint(current.pub);
+      const retiredNote = retiredCount > 0 ? ` · ${retiredCount} older key${retiredCount > 1 ? 's' : ''} kept for decryption` : '';
+      el.innerHTML = `<span class="ok">✓ Encryption key active</span> · <span class="mono" style="font-size:11px">${fp}</span>${retiredNote}`;
       if (genUI)   genUI.style.display   = 'none';
       if (resetUI) resetUI.style.display = '';
     } else {
-      el.textContent = 'No encryption key generated.';
+      const note = retiredCount > 0
+        ? `No active key · ${retiredCount} retired key${retiredCount > 1 ? 's' : ''} kept for decryption of old files.`
+        : 'No encryption key generated.';
+      el.textContent = note;
       if (genUI)   genUI.style.display   = '';
-      if (resetUI) resetUI.style.display = 'none';
+      if (resetUI) resetUI.style.display = allKeys.length > 0 ? '' : 'none';
     }
   },
 
   async resetEncryptionKey() {
-    if (!confirm('Delete and regenerate the encryption key? Documents already encrypted to you will no longer be openable.')) return;
+    if (!confirm('Retire the current encryption key and generate a fresh one?\n\nThe old key is kept so existing encrypted files remain openable.')) return;
+    const allKeys = await db.getAll('encryption_keys');
+    for (const k of allKeys) {
+      if (k.is_current) await db.put('encryption_keys', { ...k, is_current: false });
+    }
     await db.del('settings', 'my_encryption_key_pub');
-    await db.del('settings', 'my_encryption_key_enc');
-    await db.del('settings', 'my_encryption_key_iv');
+    await keyring.ensureUnlocked();
+    await keyring.ensureEncryptionKey();
     await this.checkEncryptionKeyStatus();
-    ui.display('<span class="ok">Encryption key deleted — tap Generate Encryption Key to create a fresh one.</span>');
+    ui.display('<span class="ok">New encryption key generated. Old key kept for decryption of existing files.</span>');
   },
 
   async showPairingQR() {
@@ -1721,20 +1737,19 @@ const app = {
         return { ...rec, private_key_raw: privB64, private_key_encrypted: undefined, private_key_iv: undefined };
       }));
 
-      // Collect encryption key
-      const encPub = await db.get('settings', 'my_encryption_key_pub');
-      const encEnc = await db.get('settings', 'my_encryption_key_enc');
-      const encIv  = await db.get('settings', 'my_encryption_key_iv');
+      // Collect current encryption key
+      const allEncKeys = await db.getAll('encryption_keys');
+      const currentEncKey = allEncKeys.find(k => k.is_current);
       let encKeyRaw = null;
-      if (encEnc && encIv) {
-        encKeyRaw = await cryptoOps.decryptPrivateKey(encEnc.value, encIv.value, keyring._sessionKey);
+      if (currentEncKey) {
+        encKeyRaw = await cryptoOps.decryptPrivateKey(currentEncKey.enc, currentEncKey.iv, keyring._sessionKey);
       }
 
       const payload = {
         keys: keysPayload,
         contacts: await db.getAll('contacts'),
         contact_keys: await db.getAll('contact_keys'),
-        encryption_key_pub: encPub ? encPub.value : null,
+        encryption_key_pub: currentEncKey ? currentEncKey.pub : null,
         encryption_key_raw: encKeyRaw,
         sent_at: new Date().toISOString(),
       };
@@ -1833,11 +1848,15 @@ const app = {
         });
         imported++;
       }
-      if (payload.encryption_key_raw && !await db.get('settings', 'my_encryption_key_pub')) {
-        const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(payload.encryption_key_raw, keyring._sessionKey);
-        await db.put('settings', { key: 'my_encryption_key_pub', value: payload.encryption_key_pub });
-        await db.put('settings', { key: 'my_encryption_key_enc', value: ciphertext_b64 });
-        await db.put('settings', { key: 'my_encryption_key_iv',  value: iv_b64 });
+      if (payload.encryption_key_raw && payload.encryption_key_pub) {
+        const existing = await db.get('encryption_keys', payload.encryption_key_pub);
+        if (!existing) {
+          const { ciphertext_b64, iv_b64 } = await cryptoOps.encryptPrivateKey(payload.encryption_key_raw, keyring._sessionKey);
+          const allEncKeys = await db.getAll('encryption_keys');
+          const hasCurrent = allEncKeys.some(k => k.is_current);
+          await db.put('encryption_keys', { pub: payload.encryption_key_pub, enc: ciphertext_b64, iv: iv_b64, created: new Date().toISOString(), is_current: !hasCurrent });
+          if (!hasCurrent) await db.put('settings', { key: 'my_encryption_key_pub', value: payload.encryption_key_pub });
+        }
       }
       const existingContactFps = new Set((await db.getAll('contact_keys')).map(k => k.fingerprint));
       const existingPersonIds  = new Set((await db.getAll('contacts')).map(p => p.id));
