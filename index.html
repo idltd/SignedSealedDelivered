@@ -182,6 +182,12 @@
       <label>Document Text</label>
       <textarea id="compose-text" placeholder="Enter the plain-text document to sign…"></textarea>
     </div>
+    <div class="form-group" id="compose-recipient-wrap" style="display:none">
+      <label>Encrypt for (optional)</label>
+      <select id="compose-recipient-select">
+        <option value="">— No encryption —</option>
+      </select>
+    </div>
     <button onclick="app.previewSign()">Preview &amp; Sign →</button>
   </section>
 
@@ -407,7 +413,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v22';
+const APP_VERSION = 'ssd-v23';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -624,6 +630,15 @@ const cryptoOps = {
     const pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: this.b64dec(iv_b64) }, aesKey, this.b64dec(ct_b64));
     return JSON.parse(new TextDecoder().decode(pt));
   },
+  async encryptBytes(data, aesKey) {
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const ct = await window.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, data);
+    return { iv_b64: this.b64enc(iv), ct_b64: this.b64enc(ct) };
+  },
+  async decryptBytes(iv_b64, ct_b64, aesKey) {
+    const pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv: this.b64dec(iv_b64) }, aesKey, this.b64dec(ct_b64));
+    return new Uint8Array(pt);
+  },
   async verificationCode(pubKeyB64) {
     const hex = await this.sha256(this.b64dec(pubKeyB64));
     return String(parseInt(hex.slice(0, 8), 16) % 1000000).padStart(6, '0');
@@ -767,6 +782,15 @@ const keyring = {
     const enc = await db.get('settings', 'my_sync_key_enc');
     const iv  = await db.get('settings', 'my_sync_key_iv');
     if (!enc || !iv) throw new Error('No sync key found.');
+    const privB64 = await cryptoOps.decryptPrivateKey(enc.value, iv.value, this._sessionKey);
+    return cryptoOps.importX25519PrivateKeyB64(privB64);
+  },
+
+  async getEncryptionPrivateKey() {
+    if (!this._sessionKey) throw new Error('Keyring locked.');
+    const enc = await db.get('settings', 'my_encryption_key_enc');
+    const iv  = await db.get('settings', 'my_encryption_key_iv');
+    if (!enc || !iv) throw new Error('No encryption key found.');
     const privB64 = await cryptoOps.decryptPrivateKey(enc.value, iv.value, this._sessionKey);
     return cryptoOps.importX25519PrivateKeyB64(privB64);
   },
@@ -1163,6 +1187,19 @@ const app = {
     sel.innerHTML = keys.length
       ? keys.map(k => `<option value="${k.id}"${k.is_default?' selected':''}>${k.name} [${k.fingerprint}]</option>`).join('')
       : '<option value="">— No keys —</option>';
+
+    // Populate recipient picker with contacts that have an encryption key
+    const recSel  = document.getElementById('compose-recipient-select');
+    const recWrap = document.getElementById('compose-recipient-wrap');
+    if (!recSel || !recWrap) return;
+    const persons = (await db.getAll('contacts')).filter(p => p.encryption_key_pub);
+    if (persons.length) {
+      recSel.innerHTML = '<option value="">— No encryption —</option>'
+        + persons.map(p => `<option value="${p.id}">${p.local_name}</option>`).join('');
+      recWrap.style.display = '';
+    } else {
+      recWrap.style.display = 'none';
+    }
   },
 
   startSign(keyId) {
@@ -1185,29 +1222,30 @@ const app = {
     const block     = signer.buildSignatureBlock(rec.fingerprint, rec.name, timestamp);
     const render    = signer.buildRender(wrapped, block);
 
-    this._sigCtx = { keyId, wrapped, timestamp, render, rec };
+    const recipientId = document.getElementById('compose-recipient-select')?.value || '';
+    this._sigCtx = { keyId, wrapped, timestamp, render, rec, recipientId };
     document.getElementById('confirm-render').textContent = render;
     ui.showSection('signConfirm');
   },
 
   async confirmSign() {
     if (!this._sigCtx) { ui.showSection('compose'); return; }
-    const { keyId, wrapped, timestamp, render, rec } = this._sigCtx;
+    const { keyId, wrapped, timestamp, render, rec, recipientId } = this._sigCtx;
 
     ui.showSection('keyring');
     ui.display('Confirm with your passkey to sign…');
 
     try {
-      // Single passkey prompt: unlocks key storage AND confirms signing intent
       await keyring.unlock();
 
       const enc = new TextEncoder();
       const srcHash = 'sha256:' + await cryptoOps.sha256(enc.encode(wrapped));
       const renHash = 'sha256:' + await cryptoOps.sha256(enc.encode(render));
+      const isEncrypted = !!recipientId;
 
       const manifestObj = {
         version: '1.0', render_spec: 'ssd-render-1.0',
-        signed_at: timestamp, encrypted: false,
+        signed_at: timestamp, encrypted: isEncrypted,
         signer_fingerprint: rec.fingerprint, signer_name: rec.name,
         files: { 'source.txt': srcHash, 'render.txt': renHash },
       };
@@ -1223,30 +1261,50 @@ const app = {
         signed_at: timestamp, manifest_hash: manifestHash, signature,
       };
 
-      const sealedBytes = await artifact.pack(wrapped, render, manifestObj, signatureObj);
-      const artifactId  = window.crypto.randomUUID();
-      const opfsPath    = `artifacts/${artifactId}.sealed`;
-      await opfsStore.write(opfsPath, sealedBytes);
+      // Inner signed ZIP (always built the same way)
+      const innerZip = await artifact.pack(wrapped, render, manifestObj, signatureObj);
+
+      // If a recipient was chosen, wrap the ZIP in an encrypted envelope
+      let outputBytes, encryptedFor = [];
+      if (isEncrypted) {
+        const person = await db.get('contacts', recipientId);
+        if (!person?.encryption_key_pub) throw new Error('Recipient has no encryption key — import their key card first.');
+        const recipientPub = await cryptoOps.importX25519PublicKeyB64(person.encryption_key_pub);
+        const ephemeral    = await cryptoOps.generateX25519Keypair();
+        const ephPubB64    = await cryptoOps.exportX25519PublicKeyB64(ephemeral.publicKey);
+        const transportKey = await cryptoOps.deriveSharedKey(ephemeral.privateKey, recipientPub, 'ssd-sealed-v1');
+        const { iv_b64, ct_b64 } = await cryptoOps.encryptBytes(innerZip, transportKey);
+        const envelope = { ssd: 'sealed-enc-v1', for_key: person.encryption_key_pub, ep: ephPubB64, iv: iv_b64, ct: ct_b64 };
+        outputBytes  = enc.encode(JSON.stringify(envelope));
+        encryptedFor = [person.id];
+        ui.display('Encrypting…');
+      } else {
+        outputBytes = innerZip;
+      }
+
+      const artifactId = window.crypto.randomUUID();
+      const opfsPath   = `artifacts/${artifactId}.sealed`;
+      await opfsStore.write(opfsPath, outputBytes);
 
       await db.put('artifacts', {
         id: artifactId, direction: 'sent', signed_by_key_id: keyId,
         fingerprint: rec.fingerprint,
-        artifact_hash: 'sha256:' + await cryptoOps.sha256(sealedBytes),
+        artifact_hash: 'sha256:' + await cryptoOps.sha256(outputBytes),
         render_spec: 'ssd-render-1.0', created: timestamp,
-        encrypted: false, encrypted_for: [], opfs_path: opfsPath,
+        encrypted: isEncrypted, encrypted_for: encryptedFor, opfs_path: opfsPath,
         summary: wrapped.slice(0, 80),
       });
 
-      // Download
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([sealedBytes], { type: 'application/x-ssd-sealed' }));
+      a.href = URL.createObjectURL(new Blob([outputBytes], { type: 'application/x-ssd-sealed' }));
       a.download = `ssd-${rec.fingerprint}-${Date.now()}.sealed`;
       a.click();
       URL.revokeObjectURL(a.href);
 
       this._sigCtx = null;
       ui.clear();
-      ui.display(`<div class="ok">✓ Document signed and downloaded.</div>
+      const encNote = isEncrypted ? ' and encrypted' : '';
+      ui.display(`<div class="ok">✓ Document signed${encNote} and downloaded.</div>
         <div>Key: <span class="mono">${rec.fingerprint}</span> — ${rec.name}</div>
         <div>Signed: ${timestamp}</div>`);
       await this.loadKeyring();
@@ -1262,10 +1320,37 @@ const app = {
     ui.clear();
     ui.display('Verifying…');
     try {
-      const bytes    = new Uint8Array(await file.arrayBuffer());
-      const unpacked = await artifact.unpack(bytes);
+      const rawBytes = new Uint8Array(await file.arrayBuffer());
+
+      // Detect encrypted envelope
+      let zipBytes = rawBytes;
+      let wasEncrypted = false;
+      try {
+        const text = new TextDecoder().decode(rawBytes);
+        const envelope = JSON.parse(text);
+        if (envelope.ssd === 'sealed-enc-v1') {
+          // Decrypt with the user's encryption private key
+          const myPubSetting = await db.get('settings', 'my_encryption_key_pub');
+          if (!myPubSetting || myPubSetting.value !== envelope.for_key) {
+            throw new Error('This document is encrypted for a different recipient.');
+          }
+          ui.display('Encrypted document — authenticate to open…');
+          await keyring.ensureUnlocked();
+          const myPriv     = await keyring.getEncryptionPrivateKey();
+          const ephPub     = await cryptoOps.importX25519PublicKeyB64(envelope.ep);
+          const transportKey = await cryptoOps.deriveSharedKey(myPriv, ephPub, 'ssd-sealed-v1');
+          zipBytes     = await cryptoOps.decryptBytes(envelope.iv, envelope.ct, transportKey);
+          wasEncrypted = true;
+        }
+      } catch (e) {
+        if (e.message.includes('encrypted for a different recipient')) throw e;
+        // Not JSON / not an envelope — treat as plain ZIP
+      }
+
+      const unpacked = await artifact.unpack(zipBytes);
       const result   = await artifact.verify(unpacked);
       ui.clear();
+      if (wasEncrypted) ui.display('<div class="info" style="margin-bottom:8px">🔒 This document was encrypted for you.</div>');
       ui.display('<strong>Rendered document:</strong>');
       const pre = document.createElement('pre');
       pre.className = 'render-preview';
