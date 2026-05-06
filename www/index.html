@@ -250,6 +250,9 @@
         <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px">No encryption key yet. Generate one so contacts can send you encrypted documents.</p>
         <button onclick="app.generateEncryptionKey()">Generate Encryption Key</button>
       </div>
+      <div id="enc-key-reset-ui" style="display:none;margin-top:10px">
+        <button class="btn-secondary" onclick="app.resetEncryptionKey()" style="color:var(--danger)">Reset Encryption Key…</button>
+      </div>
     </div>
     <div class="settings-block">
       <h3>Devices</h3>
@@ -413,7 +416,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v26';
+const APP_VERSION = 'ssd-v27';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -1372,14 +1375,19 @@ const app = {
       } catch { /* not JSON — treat as plain ZIP */ }
 
       if (envelope) {
+        log('dec-1: envelope detected, recipients:', envelope.recipients?.length);
+
         // Verify outer signature (no decryption needed)
         if (envelope.outer_sig && envelope.signer_fingerprint) {
+          log('dec-2: verifying outer sig for', envelope.signer_fingerprint);
           const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: envelope.signed_at, signer_fingerprint: envelope.signer_fingerprint, manifest_hash: envelope.manifest_hash });
           const allKeys = [...await db.getAll('my_keys'), ...await db.getAll('contact_keys')];
           const signerKey = allKeys.find(k => k.fingerprint === envelope.signer_fingerprint);
           if (signerKey) {
             const pubKey = await cryptoOps.importPublicKeyB64(signerKey.public_key_b64);
+            log('dec-3: pubkey imported');
             const valid  = await cryptoOps.verify(pubKey, envelope.outer_sig, new TextEncoder().encode(outerMeta));
+            log('dec-4: outer sig valid:', valid);
             outerSigStatus = valid ? { ok: true, name: signerKey.name, fp: signerKey.fingerprint } : { ok: false };
           } else {
             outerSigStatus = { ok: null, fp: envelope.signer_fingerprint };
@@ -1388,15 +1396,22 @@ const app = {
 
         // Find our recipient slot and decrypt
         const myPubSetting = await db.get('settings', 'my_encryption_key_pub');
+        log('dec-5: my enc pub exists:', !!myPubSetting);
         const slot = myPubSetting && envelope.recipients?.find(r => r.for_key === myPubSetting.value);
+        log('dec-6: slot found:', !!slot);
         if (!slot) throw new Error('This document is not addressed to this device\'s encryption key.');
 
         ui.display('Encrypted document — authenticate to open…');
         await keyring.ensureUnlocked();
+        log('dec-7: unlocked, getting enc private key');
         const myPriv   = await keyring.getEncryptionPrivateKey();
+        log('dec-8: got priv key, unwrapping DEK');
         const dekBytes = await cryptoOps.unwrapDEK(slot, myPriv);
+        log('dec-9: DEK unwrapped, len:', dekBytes.length);
         const dekKey   = await cryptoOps.importAESKey(dekBytes);
+        log('dec-10: DEK key imported, decrypting content');
         zipBytes     = await cryptoOps.decryptBytes(envelope.iv, envelope.ct, dekKey);
+        log('dec-11: content decrypted, zip len:', zipBytes.length);
         wasEncrypted = true;
       }
 
@@ -1596,18 +1611,30 @@ const app = {
   },
 
   async checkEncryptionKeyStatus() {
-    const el = document.getElementById('enc-key-status');
-    const genUI = document.getElementById('enc-key-generate-ui');
+    const el      = document.getElementById('enc-key-status');
+    const genUI   = document.getElementById('enc-key-generate-ui');
+    const resetUI = document.getElementById('enc-key-reset-ui');
     if (!el) return;
     const setting = await db.get('settings', 'my_encryption_key_pub');
     if (setting) {
       const fp = await cryptoOps.fingerprint(setting.value);
       el.innerHTML = `<span class="ok">✓ Encryption key active</span> · <span class="mono" style="font-size:11px">${fp}</span>`;
-      if (genUI) genUI.style.display = 'none';
+      if (genUI)   genUI.style.display   = 'none';
+      if (resetUI) resetUI.style.display = '';
     } else {
       el.textContent = 'No encryption key generated.';
-      if (genUI) genUI.style.display = '';
+      if (genUI)   genUI.style.display   = '';
+      if (resetUI) resetUI.style.display = 'none';
     }
+  },
+
+  async resetEncryptionKey() {
+    if (!confirm('Delete and regenerate the encryption key? Documents already encrypted to you will no longer be openable.')) return;
+    await db.del('settings', 'my_encryption_key_pub');
+    await db.del('settings', 'my_encryption_key_enc');
+    await db.del('settings', 'my_encryption_key_iv');
+    await this.checkEncryptionKeyStatus();
+    ui.display('<span class="ok">Encryption key deleted — tap Generate Encryption Key to create a fresh one.</span>');
   },
 
   async showPairingQR() {
