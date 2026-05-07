@@ -184,10 +184,8 @@
       <textarea id="compose-text" placeholder="Enter the plain-text document to sign…"></textarea>
     </div>
     <div class="form-group" id="compose-recipient-wrap" style="display:none">
-      <label>Encrypt for (optional)</label>
-      <select id="compose-recipient-select">
-        <option value="">— No encryption —</option>
-      </select>
+      <label>Encrypt for (leave all unchecked for no encryption)</label>
+      <div id="compose-recipient-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px"></div>
     </div>
     <button onclick="app.previewSign()">Preview &amp; Sign →</button>
   </section>
@@ -423,7 +421,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v30';
+const APP_VERSION = 'ssd-v31';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -1220,16 +1218,22 @@ const app = {
       ? keys.map(k => `<option value="${k.id}"${k.is_default?' selected':''}>${k.name} [${k.fingerprint}]</option>`).join('')
       : '<option value="">— No keys —</option>';
 
-    // Populate recipient picker — self always first if encryption key exists, then contacts
-    const recSel  = document.getElementById('compose-recipient-select');
+    // Populate recipient picker — checkboxes, all unchecked = no encryption
+    const recList = document.getElementById('compose-recipient-list');
     const recWrap = document.getElementById('compose-recipient-wrap');
-    if (!recSel || !recWrap) return;
+    if (!recList || !recWrap) return;
     const myEncKey = await db.get('settings', 'my_encryption_key_pub');
     const persons  = (await db.getAll('contacts')).filter(p => p.encryption_key_pub);
     if (myEncKey || persons.length) {
-      recSel.innerHTML = '<option value="">— No encryption —</option>'
-        + (myEncKey ? '<option value="__self__">Myself (private copy)</option>' : '')
-        + persons.map(p => `<option value="${p.id}">${p.local_name}</option>`).join('');
+      const items = [];
+      if (myEncKey) items.push({ id: '__self__', label: 'Myself (private copy)' });
+      for (const p of persons) items.push({ id: p.id, label: p.local_name });
+      recList.innerHTML = items.map(it =>
+        `<label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer">
+          <input type="checkbox" class="compose-recipient-cb" value="${it.id}">
+          ${it.label}
+        </label>`
+      ).join('');
       recWrap.style.display = '';
     } else {
       recWrap.style.display = 'none';
@@ -1256,15 +1260,15 @@ const app = {
     const block     = signer.buildSignatureBlock(rec.fingerprint, rec.name, timestamp);
     const render    = signer.buildRender(wrapped, block);
 
-    const recipientId = document.getElementById('compose-recipient-select')?.value || '';
-    this._sigCtx = { keyId, wrapped, timestamp, render, rec, recipientId };
+    const recipientIds = [...document.querySelectorAll('.compose-recipient-cb:checked')].map(cb => cb.value);
+    this._sigCtx = { keyId, wrapped, timestamp, render, rec, recipientIds };
     document.getElementById('confirm-render').textContent = render;
     ui.showSection('signConfirm');
   },
 
   async confirmSign() {
     if (!this._sigCtx) { ui.showSection('compose'); return; }
-    const { keyId, wrapped, timestamp, render, rec, recipientId } = this._sigCtx;
+    const { keyId, wrapped, timestamp, render, rec, recipientIds } = this._sigCtx;
 
     ui.showSection('keyring');
     ui.display('Confirm with your passkey to sign…');
@@ -1275,7 +1279,7 @@ const app = {
       const enc = new TextEncoder();
       const srcHash = 'sha256:' + await cryptoOps.sha256(enc.encode(wrapped));
       const renHash = 'sha256:' + await cryptoOps.sha256(enc.encode(render));
-      const isEncrypted = !!recipientId;
+      const isEncrypted = recipientIds && recipientIds.length > 0;
 
       const manifestObj = {
         version: '1.0', render_spec: 'ssd-render-1.0',
@@ -1302,20 +1306,23 @@ const app = {
       const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: timestamp, signer_fingerprint: rec.fingerprint, manifest_hash: manifestHash });
       const outerSig  = await cryptoOps.sign(privateKey, enc.encode(outerMeta));
 
-      // If a recipient was chosen, build DEK-based envelope with per-recipient key slots
+      // If any recipients checked, build DEK-based envelope with per-recipient key slots
       let outputBytes, encryptedFor = [];
       if (isEncrypted) {
         ui.display('Encrypting…');
 
-        // Collect recipient public keys — always include self, optionally a contact
         const myEncSetting = await db.get('settings', 'my_encryption_key_pub');
-        if (!myEncSetting) throw new Error('No encryption key on this device — generate one in Settings first.');
-        const recipientPubs = [{ id: '__self__', pub: myEncSetting.value }];
-        if (recipientId !== '__self__') {
-          const person = await db.get('contacts', recipientId);
-          if (!person?.encryption_key_pub) throw new Error('Recipient has no encryption key — import their key card first.');
-          recipientPubs.push({ id: person.id, pub: person.encryption_key_pub });
-          encryptedFor = [person.id];
+        const recipientPubs = [];
+        for (const id of recipientIds) {
+          if (id === '__self__') {
+            if (!myEncSetting) throw new Error('No encryption key on this device — generate one in Settings first.');
+            recipientPubs.push({ id: '__self__', pub: myEncSetting.value });
+          } else {
+            const person = await db.get('contacts', id);
+            if (!person?.encryption_key_pub) throw new Error(`${person?.local_name || id} has no encryption key — import their key card first.`);
+            recipientPubs.push({ id: person.id, pub: person.encryption_key_pub });
+            encryptedFor.push(person.id);
+          }
         }
 
         // One random DEK; encrypt ZIP once; wrap DEK per recipient
@@ -1434,7 +1441,8 @@ const app = {
       ui.clear();
 
       if (wasEncrypted) {
-        let outerNote = '<div class="info" style="margin-bottom:8px">This document was encrypted.';
+        const rCount = envelope.recipients?.length ?? 0;
+        let outerNote = `<div class="info" style="margin-bottom:8px">Encrypted to ${rCount} recipient${rCount !== 1 ? 's' : ''}.`;
         if (outerSigStatus?.ok === true)       outerNote += ` Outer signature verified: <strong>${outerSigStatus.name}</strong> <span class="mono" style="font-size:11px">${outerSigStatus.fp}</span>`;
         else if (outerSigStatus?.ok === false) outerNote += ' <span class="warn">Outer signature INVALID.</span>';
         else if (outerSigStatus?.ok === null)  outerNote += ` Signed by unknown key <span class="mono" style="font-size:11px">${outerSigStatus.fp}</span>.`;
