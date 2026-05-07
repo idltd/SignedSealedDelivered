@@ -147,7 +147,6 @@
     <button class="nav-btn" data-section="verify" onclick="ui.showSection('verify')">Verify</button>
     <button class="nav-btn" data-section="docs" onclick="ui.showSection('docs')">Documents</button>
     <button class="nav-btn" data-section="settings" onclick="ui.showSection('settings')">Settings</button>
-    <button class="nav-btn" data-section="dev" onclick="ui.showSection('dev')">Dev</button>
   </nav>
 </header>
 <main>
@@ -370,46 +369,6 @@
     </div>
   </div>
 
-  <!-- DEV LOG -->
-  <section id="dev" class="section">
-    <h2>Dev Log</h2>
-
-    <div class="settings-block" style="margin-bottom:16px">
-      <h3>QR Self-Test</h3>
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px">Run each step on a separate device to prove generation and scanning work independently.</p>
-
-      <p style="font-size:12px;font-weight:600;margin-bottom:8px">Step 1 — Generate (on this device)</p>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Show a test QR. Ask the other device to scan it with Raw Scan below.</p>
-      <button class="btn-secondary" onclick="app.devShowTestQR('SSD-TEST-OK')">Show test QR</button>
-
-      <p style="font-size:12px;font-weight:600;margin-top:20px;margin-bottom:8px">Step 2 — Scan (on this device)</p>
-      <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Point camera at a QR code. Shows raw decoded text — no processing.</p>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-        <button onclick="app.devRawScan()">Raw Scan</button>
-        <button class="btn-secondary" onclick="app.devSnapshot()">Snapshot</button>
-      </div>
-      <div id="dev-scan-result" style="margin-top:8px;font-family:var(--mono);font-size:12px;color:var(--text-muted);word-break:break-all"></div>
-      <canvas id="dev-snapshot-canvas" style="display:none;width:100%;margin-top:8px;border-radius:4px"></canvas>
-    </div>
-
-    <div class="settings-block">
-      <h3>Log</h3>
-      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-        <button class="btn-secondary" onclick="document.getElementById('dev-log').innerHTML=''">Clear</button>
-        <button class="btn-secondary" onclick="
-          const r = document.createRange();
-          r.selectNodeContents(document.getElementById('dev-log'));
-          const s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
-        ">Select All</button>
-        <button class="btn-secondary" onclick="
-          const txt = document.getElementById('dev-log').innerText;
-          navigator.clipboard.writeText(txt).then(() => ui.display('Copied.'));
-        ">Copy All</button>
-      </div>
-      <div id="dev-log" style="font-family:var(--mono);font-size:11px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px;min-height:200px;max-height:60vh;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:var(--text-muted)"></div>
-    </div>
-  </section>
-
   <div id="results"></div>
 </main>
 
@@ -421,18 +380,9 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v31';
+const APP_VERSION = 'ssd-v32';
 
-const log = (...a) => {
-  console.log('[SSD]', ...a);
-  const p = document.getElementById('dev-log');
-  if (!p) return;
-  const line = document.createElement('div');
-  const ts = new Date().toISOString().slice(11, 23);
-  line.textContent = ts + ' ' + a.map(x => (x && typeof x === 'object') ? JSON.stringify(x) : String(x)).join(' ');
-  p.appendChild(line);
-  p.scrollTop = p.scrollHeight;
-};
+const log = (...a) => console.log('[SSD]', ...a);
 
 // ─── DB ───────────────────────────────────────────────────────────────────────
 const db = {
@@ -1139,7 +1089,6 @@ const app = {
   _scanStream: null,
   _scanInterval: null,
   _qrCycleInterval: null,
-  _devRawMode: false,
   _pendingPairing: null,
 
   async init() {
@@ -2315,36 +2264,6 @@ const app = {
     await this.loadContacts();
   },
 
-  devShowTestQR(text) {
-    log('devShowTestQR', text.length, 'chars');
-    this._showQRModal('Test QR', `Payload: ${text}`, text, null);
-  },
-
-  async devSnapshot() {
-    const canvas = document.getElementById('dev-snapshot-canvas');
-    if (!canvas) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-      const track = stream.getVideoTracks()[0];
-      const ic = new ImageCapture(track);
-      await new Promise(r => setTimeout(r, 600));
-      const bmp = await ic.grabFrame();
-      track.stop();
-      canvas.width = bmp.width;
-      canvas.height = bmp.height;
-      canvas.getContext('2d').drawImage(bmp, 0, 0);
-      canvas.style.display = 'block';
-      log(`snapshot ${bmp.width}×${bmp.height}`);
-    } catch(e) {
-      log('snapshot err:', e.message);
-    }
-  },
-
-  devRawScan() {
-    this._devRawMode = true;
-    this.startQRScan();
-  },
-
   toggleQuarantine() {
     const list = document.getElementById('quarantine-list');
     const btn  = document.getElementById('quarantine-toggle-btn');
@@ -2482,14 +2401,6 @@ const app = {
   },
 
   async _handleScannedQR(data) {
-    if (this._devRawMode) {
-      this._devRawMode = false;
-      const el = document.getElementById('dev-scan-result');
-      if (el) el.textContent = `Decoded (${data.length} chars): ${data}`;
-      log('raw scan result:', data.length, 'chars —', data.slice(0, 80));
-      ui.showSection('dev');
-      return;
-    }
     if (this._scanCallback) {
       const cb = this._scanCallback;
       this._scanCallback = null;
