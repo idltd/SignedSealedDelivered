@@ -258,7 +258,7 @@
         <button onclick="app.generateEncryptionKey()">Generate Encryption Key</button>
       </div>
       <div id="enc-key-reset-ui" style="display:none;margin-top:10px">
-        <button class="btn-secondary" onclick="app.resetEncryptionKey()">Rotate Encryption Key…</button>
+        <button class="btn-secondary" onclick="app.resetEncryptionKey()" style="color:var(--danger)">Replace broken key…</button>
       </div>
     </div>
     <div class="settings-block">
@@ -423,7 +423,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v29';
+const APP_VERSION = 'ssd-v30';
 
 const log = (...a) => {
   console.log('[SSD]', ...a);
@@ -1634,31 +1634,27 @@ const app = {
     const retiredCount = allKeys.filter(k => !k.is_current).length;
     if (current) {
       const fp = await cryptoOps.fingerprint(current.pub);
-      const retiredNote = retiredCount > 0 ? ` · ${retiredCount} older key${retiredCount > 1 ? 's' : ''} kept for decryption` : '';
-      el.innerHTML = `<span class="ok">✓ Encryption key active</span> · <span class="mono" style="font-size:11px">${fp}</span>${retiredNote}`;
+      el.innerHTML = `<span class="ok">✓ Encryption key active</span> · <span class="mono" style="font-size:11px">${fp}</span>`;
       if (genUI)   genUI.style.display   = 'none';
       if (resetUI) resetUI.style.display = '';
     } else {
-      const note = retiredCount > 0
-        ? `No active key · ${retiredCount} retired key${retiredCount > 1 ? 's' : ''} kept for decryption of old files.`
-        : 'No encryption key generated.';
-      el.textContent = note;
+      el.textContent = 'No encryption key generated.';
       if (genUI)   genUI.style.display   = '';
-      if (resetUI) resetUI.style.display = allKeys.length > 0 ? '' : 'none';
+      if (resetUI) resetUI.style.display = 'none';
     }
   },
 
   async resetEncryptionKey() {
-    if (!confirm('Retire the current encryption key and generate a fresh one?\n\nThe old key is kept so existing encrypted files remain openable.')) return;
+    if (!confirm('Delete the current encryption key and generate a fresh one?\n\nOnly use this if the key is broken and cannot decrypt files. Any documents encrypted to the old key will be permanently inaccessible.')) return;
     const allKeys = await db.getAll('encryption_keys');
     for (const k of allKeys) {
-      if (k.is_current) await db.put('encryption_keys', { ...k, is_current: false });
+      if (k.is_current) await db.del('encryption_keys', k.pub);
     }
     await db.del('settings', 'my_encryption_key_pub');
     await keyring.ensureUnlocked();
     await keyring.ensureEncryptionKey();
     await this.checkEncryptionKeyStatus();
-    ui.display('<span class="ok">New encryption key generated. Old key kept for decryption of existing files.</span>');
+    ui.display('<span class="ok">New encryption key generated.</span>');
   },
 
   async showPairingQR() {
