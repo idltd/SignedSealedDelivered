@@ -1,1 +1,6 @@
 .claude/
+node_modules/
+docs/restart.txt
+*.png.bak
+screen.png
+C*.png

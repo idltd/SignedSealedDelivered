@@ -2,9 +2,9 @@
 
 A cryptographic document signing and verification tool that runs entirely in the browser. No server, no accounts, no cloud.
 
-## Current State — Phase 1
+## Current State
 
-Phase 1 is complete. The core signing loop works end-to-end:
+Core signing loop, key exchange, and multi-recipient encryption are all complete (v32).
 
 - **Passkey registration** — WebAuthn with PRF extension for keyring encryption
 - **Ed25519 keypair generation** — keys stored in IndexedDB with AES-256-GCM-encrypted private keys
@@ -12,21 +12,19 @@ Phase 1 is complete. The core signing loop works end-to-end:
 - **Key card export** — self-signed JSON, verifiable without the app
 - **Document signing** — compose → canonical render → explicit biometric confirmation → `.sealed` artifact
 - **Verification** — drag-and-drop `.sealed` files, checks hashes and Ed25519 signature
+- **Contact keyring** — import contacts via QR or paste, quarantine management
+- **Encryption** — encrypt artifacts to one or more recipients by public key
 - **PWA** — installs offline, service worker caches shell
 
 ## Running
 
-No build step. Serve the project root over HTTP/HTTPS:
+Served from GitHub Pages. To run locally — no build step, just serve over HTTP/HTTPS:
 
 ```
-# Python
 py -m http.server 8080
-
-# Node (npx)
-npx serve .
 ```
 
-Then open `http://localhost:8080`. **WebAuthn requires localhost or HTTPS** — opening `index.html` directly as a `file://` URL will not work.
+Then open `http://localhost:8080`. **WebAuthn requires localhost or HTTPS** — opening `index.html` as a `file://` URL will not work.
 
 ## File Structure
 
@@ -61,9 +59,9 @@ All cryptography uses the native WebCrypto API. All storage is IndexedDB (metada
 | Phase | Goal | Status |
 |-------|------|--------|
 | 1 | Core loop — sign, verify, key management | ✅ Complete |
-| 2 | Key exchange — QR codes, paste import, contact keyring | Planned |
-| 3 | Encryption — per-recipient encrypted artifacts | Planned |
-| 4 | Integration — OS file handler, share target, countersignatures | Planned |
+| 2 | Key exchange — QR codes, paste import, contact keyring | ✅ Complete |
+| 3 | Encryption — per-recipient encrypted artifacts | ✅ Complete |
+| 4 | Integration — contacts system links, countersignatures | Planned |
 
 ## Browser Requirements
 
