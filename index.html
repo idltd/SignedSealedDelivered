@@ -376,7 +376,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 'use strict';
@@ -2163,15 +2163,18 @@ const app = {
     const cycleWrap = document.getElementById('qr-cycle-wrap');
     const cycleDots = document.getElementById('qr-cycle-dots');
 
-    const renderPayload = async (idx) => {
+    const renderPayload = (idx) => {
       const { payload, label } = payloads[idx];
       log('QR render — slot', idx + 1, 'of', payloads.length, '— bytes:', payload.length, label ? '(' + label + ')' : '');
       canvas.innerHTML = '';
       try {
-        const svg = await QRCode.toString(payload, { type: 'svg', errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' }, margin: 2, width: 300 });
-        canvas.innerHTML = svg;
-        const svgEl = canvas.querySelector('svg');
-        if (svgEl) { svgEl.style.cssText = 'width:100%;max-width:300px;height:auto;display:block;border-radius:4px'; }
+        const dpr = window.devicePixelRatio || 1;
+        const cssSize = Math.min(window.innerWidth - 48, 300);
+        const physSize = Math.round(cssSize * dpr);
+        new QRCode(canvas, { text: payload, width: physSize, height: physSize, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+        // Render at physical pixels then constrain to CSS size so QR is crisp on HiDPI screens
+        const qrEl = canvas.querySelector('img') || canvas.querySelector('canvas');
+        if (qrEl) { qrEl.style.width = cssSize + 'px'; qrEl.style.height = cssSize + 'px'; qrEl.style.borderRadius = '4px'; }
       } catch(e) {
         log('QR generation error:', e.message);
         ui.display(`<span class="fail">QR generation failed: ${e.message}</span>`);
