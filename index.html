@@ -376,13 +376,13 @@
 
 <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"
         crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v32';
+const APP_VERSION = 'ssd-v33';
 
 const log = (...a) => console.log('[SSD]', ...a);
 
@@ -2120,8 +2120,7 @@ const app = {
       await keyring.ensureUnlocked();
       const card = await keyring.exportKeyCard(keyId);
 
-      // Minimal QR payload — name and public key only; fingerprint computed on import
-      const qrPayload = JSON.stringify({ ssd: 'qr1', n: card.name, k: card.public_key });
+      const qrPayload = JSON.stringify({ ssd: 'qr1', n: card.name, k: card.public_key, ...(card.encryption_key ? { ek: card.encryption_key } : {}) });
       log('QR payload bytes:', qrPayload.length);
       await this._showQRModal('Your key card', `Share this so contacts can verify your identity. Fingerprint: ${card.fingerprint}`, qrPayload, null);
     } catch(e) {
@@ -2164,13 +2163,15 @@ const app = {
     const cycleWrap = document.getElementById('qr-cycle-wrap');
     const cycleDots = document.getElementById('qr-cycle-dots');
 
-    const renderPayload = (idx) => {
+    const renderPayload = async (idx) => {
       const { payload, label } = payloads[idx];
       log('QR render — slot', idx + 1, 'of', payloads.length, '— bytes:', payload.length, label ? '(' + label + ')' : '');
       canvas.innerHTML = '';
       try {
-        const qrSize = Math.min(window.innerWidth - 48, 400);
-        new QRCode(canvas, { text: payload, width: qrSize, height: qrSize, colorDark: '#000000', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.L });
+        const svg = await QRCode.toString(payload, { type: 'svg', errorCorrectionLevel: 'M', color: { dark: '#000000', light: '#ffffff' }, margin: 2, width: 300 });
+        canvas.innerHTML = svg;
+        const svgEl = canvas.querySelector('svg');
+        if (svgEl) { svgEl.style.cssText = 'width:100%;max-width:300px;height:auto;display:block;border-radius:4px'; }
       } catch(e) {
         log('QR generation error:', e.message);
         ui.display(`<span class="fail">QR generation failed: ${e.message}</span>`);
@@ -2415,9 +2416,9 @@ const app = {
       ui.display('<span class="fail">QR code is not a valid key card.</span>');
       return;
     }
-    // Compact QR format: {ssd:'qr1', n:name, k:public_key}
+    // Compact QR format: {ssd:'qr1', n:name, k:public_key, ek?:encryption_key}
     if (card.ssd === 'qr1') {
-      card = { name: card.n, public_key: card.k };
+      card = { name: card.n, public_key: card.k, ...(card.ek ? { encryption_key: card.ek } : {}) };
     }
     ui.showSection('contacts');
     await this.importContactCard(card, 'qr_scan');
