@@ -141,18 +141,18 @@
 <header>
   <div class="brand">SSD</div>
   <nav>
-    <button class="nav-btn active" data-section="keyring" onclick="ui.showSection('keyring')">Keyring</button>
+    <button class="nav-btn active" data-section="documents" onclick="ui.showSection('docs')">Documents</button>
     <button class="nav-btn" data-section="contacts" onclick="ui.showSection('contacts')">Contacts</button>
-    <button class="nav-btn" data-section="compose" onclick="ui.showSection('compose')">Sign</button>
-    <button class="nav-btn" data-section="verify" onclick="ui.showSection('verify')">Verify</button>
-    <button class="nav-btn" data-section="docs" onclick="ui.showSection('docs')">Documents</button>
-    <button class="nav-btn" data-section="settings" onclick="ui.showSection('settings')">Settings</button>
+    <button class="nav-btn" data-section="me" onclick="ui.showSection('keyring')">Me</button>
   </nav>
 </header>
 <main>
   <!-- KEYRING -->
-  <section id="keyring" class="section active">
-    <h2>My Keys</h2>
+  <section id="keyring" class="section">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px">
+      <h2 style="margin-bottom:0">My Keys</h2>
+      <button class="btn-secondary" style="font-size:12px;padding:6px 12px" onclick="ui.showSection('settings')">Passkey &amp; Devices</button>
+    </div>
     <div id="keyring-list"></div>
     <div id="validate-result" class="validate-result" style="display:none"></div>
     <button class="fab" onclick="ui.showSection('newKey')" title="Add new key">+</button>
@@ -219,8 +219,12 @@
   </section>
 
   <!-- DOCUMENTS -->
-  <section id="docs" class="section">
+  <section id="docs" class="section active">
     <h2>Documents</h2>
+    <div class="section-actions" style="margin-bottom:20px">
+      <button onclick="ui.showSection('compose')">Sign a document</button>
+      <button class="btn-secondary" onclick="ui.showSection('verify')">Verify a document</button>
+    </div>
     <div id="docs-list"></div>
   </section>
 
@@ -382,7 +386,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v34';
+const APP_VERSION = 'ssd-v35';
 
 const log = (...a) => console.log('[SSD]', ...a);
 
@@ -1043,11 +1047,17 @@ const identicon = {
 // ─── UI ───────────────────────────────────────────────────────────────────────
 const ui = {
   showSection(id) {
+    const NAV_PARENT = {
+      docs: 'documents', compose: 'documents', signConfirm: 'documents', verify: 'documents',
+      contacts: 'contacts',
+      keyring: 'me', newKey: 'me', settings: 'me',
+    };
     document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
     const sec = document.getElementById(id);
     if (sec) sec.classList.add('active');
-    const btn = document.querySelector(`[data-section="${id}"]`);
+    const navKey = NAV_PARENT[id] || id;
+    const btn = document.querySelector(`[data-section="${navKey}"]`);
     if (btn) btn.classList.add('active');
     this.clear();
     if (id === 'keyring')   app.loadKeyring();
@@ -1122,7 +1132,7 @@ const app = {
     log('qrcode', typeof qrcode);
     log('jsQR', typeof jsQR);
 
-    ui.showSection('keyring');
+    ui.showSection('docs');
   },
 
   async loadKeyring() {
@@ -1221,7 +1231,7 @@ const app = {
     if (!this._sigCtx) { ui.showSection('compose'); return; }
     const { keyId, wrapped, timestamp, render, rec, recipientIds } = this._sigCtx;
 
-    ui.showSection('keyring');
+    ui.showSection('docs');
     ui.display('Confirm with your passkey to sign…');
 
     try {
@@ -1319,7 +1329,7 @@ const app = {
       ui.display(`<div class="ok">✓ Document signed${encNote} and downloaded.</div>
         <div>Key: <span class="mono">${rec.fingerprint}</span> — ${rec.name}</div>
         <div>Signed: ${timestamp}</div>`);
-      await this.loadKeyring();
+      await this.loadDocs();
 
     } catch (e) {
       ui.clear();
