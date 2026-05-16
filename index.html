@@ -212,6 +212,19 @@
     </div>
   </section>
 
+  <!-- DELIVER -->
+  <section id="deliver" class="section">
+    <h2>Deliver</h2>
+    <div id="deliver-info" class="settings-block" style="margin-bottom:20px"></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button onclick="app.downloadDelivery()">Download</button>
+      <button id="deliver-share-btn" class="btn-secondary" onclick="app.shareDelivery()" style="display:none">Share…</button>
+    </div>
+    <div style="margin-top:16px">
+      <a href="#" class="cancel-link" onclick="ui.showSection('docs');return false;">Done</a>
+    </div>
+  </section>
+
   <!-- OPEN (formerly Verify) -->
   <section id="verify" class="section">
     <h2>Open a document</h2>
@@ -1070,7 +1083,7 @@ const identicon = {
 const ui = {
   showSection(id) {
     const NAV_PARENT = {
-      docs: 'documents', compose: 'documents', signConfirm: 'documents', seal: 'documents', verify: 'documents',
+      docs: 'documents', compose: 'documents', signConfirm: 'documents', seal: 'documents', deliver: 'documents', verify: 'documents',
       contacts: 'contacts',
       keyring: 'me', newKey: 'me', settings: 'me',
     };
@@ -1087,6 +1100,7 @@ const ui = {
     if (id === 'compose')   app.loadComposeKeys();
     if (id === 'docs')      app.loadDocs();
     if (id === 'seal')      app.loadSealRecipients();
+    if (id === 'deliver')   app.loadDeliver();
     if (id === 'settings')  { app.checkPasskeyStatus(); app.checkEncryptionKeyStatus(); app.loadDevicesSection(); }
   },
   display(html) {
@@ -1417,27 +1431,106 @@ const app = {
         artifact_hash: 'sha256:' + await cryptoOps.sha256(outputBytes),
         render_spec: 'ssd-render-1.0', created: timestamp,
         encrypted: isSealed, encrypted_for: encryptedFor, opfs_path: opfsPath,
+        manifest_hash: manifestHash,
         summary: wrapped.slice(0, 80),
       });
 
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([outputBytes], { type: 'application/x-ssd-sealed' }));
-      a.download = `ssd-${rec.fingerprint}-${Date.now()}.sealed`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-
       this._sigCtx = null;
-      const note = isSealed ? ' and sealed' : '';
-      ui.clear();
-      ui.display(`<div class="ok">✓ Signed${note} and delivered.</div>
-        <div>Key: <span class="mono">${rec.fingerprint}</span> — ${rec.name}</div>
-        <div>Signed: ${timestamp}</div>`);
-      ui.showSection('docs');
+      this._deliverCtx = {
+        outputBytes,
+        filename: `ssd-${rec.fingerprint}-${Date.now()}.sealed`,
+        keyName: rec.name,
+        fingerprint: rec.fingerprint,
+        isSealed,
+        sealedForCount: encryptedFor.length,
+      };
+      ui.showSection('deliver');
 
     } catch (e) {
       ui.clear();
       ui.display(`<span class="fail">Delivery failed: ${e.message}</span>`);
       console.error(e);
+    }
+  },
+
+  loadDeliver() {
+    const ctx = this._deliverCtx;
+    if (!ctx) { ui.showSection('docs'); return; }
+    const el = document.getElementById('deliver-info');
+    if (el) {
+      const sealNote = ctx.isSealed
+        ? `Sealed for ${ctx.sealedForCount} recipient${ctx.sealedForCount !== 1 ? 's' : ''}`
+        : 'Open — readable by anyone who has your public key';
+      el.innerHTML = `
+        <div style="font-size:13px;color:var(--text-muted)">Signed by <strong>${ctx.keyName}</strong> <span class="mono" style="font-size:11px">${ctx.fingerprint}</span></div>
+        <div style="font-size:13px;color:var(--text-muted);margin-top:6px">${sealNote}</div>`;
+    }
+    const shareBtn = document.getElementById('deliver-share-btn');
+    if (shareBtn) shareBtn.style.display = (typeof navigator.share === 'function') ? '' : 'none';
+  },
+
+  downloadDelivery() {
+    const ctx = this._deliverCtx;
+    if (!ctx) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([ctx.outputBytes], { type: 'application/x-ssd-sealed' }));
+    a.download = ctx.filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  },
+
+  async shareDelivery() {
+    const ctx = this._deliverCtx;
+    if (!ctx || typeof navigator.share !== 'function') return;
+    try {
+      const file = new File([ctx.outputBytes], ctx.filename, { type: 'application/x-ssd-sealed' });
+      await navigator.share({ files: [file], title: 'Signed document' });
+    } catch(e) {
+      if (e.name !== 'AbortError') ui.display(`<span class="fail">Share failed: ${e.message}</span>`);
+    }
+  },
+
+  async sendArtifact(id) {
+    try {
+      const a = await db.get('artifacts', id);
+      if (!a) return;
+      const myKeys = await db.getAll('my_keys');
+      const sigKey = myKeys.find(k => k.id === a.signed_by_key_id);
+      const outputBytes = await opfsStore.read(a.opfs_path);
+      this._deliverCtx = {
+        outputBytes,
+        filename: `ssd-${a.fingerprint}-${Date.now()}.sealed`,
+        keyName: sigKey?.name || a.fingerprint,
+        fingerprint: a.fingerprint,
+        isSealed: a.encrypted,
+        sealedForCount: a.encrypted_for?.length || 0,
+      };
+      ui.showSection('deliver');
+    } catch(e) {
+      ui.display(`<span class="fail">Could not load document: ${e.message}</span>`);
+    }
+  },
+
+  async sealExistingArtifact(id) {
+    try {
+      const a = await db.get('artifacts', id);
+      if (!a) return;
+      if (a.encrypted) { ui.display('<span class="warn">Already sealed.</span>'); return; }
+      if (!a.manifest_hash) { ui.display('<span class="warn">This document is missing metadata needed to re-seal. Re-sign it to enable sealing.</span>'); return; }
+      ui.display('Unlocking — confirm with your passkey…');
+      const innerZip = await opfsStore.read(a.opfs_path);
+      await keyring.ensureUnlocked();
+      const privateKey = await keyring.getPrivateKey(a.signed_by_key_id);
+      const enc = new TextEncoder();
+      const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: a.created, signer_fingerprint: a.fingerprint, manifest_hash: a.manifest_hash });
+      const outerSig  = await cryptoOps.sign(privateKey, enc.encode(outerMeta));
+      const rec = await db.get('my_keys', a.signed_by_key_id);
+      this._sigCtx = { keyId: a.signed_by_key_id, wrapped: a.summary || '', timestamp: a.created, render: null, rec, innerZip, outerSig, outerMeta, manifestHash: a.manifest_hash };
+      ui.clear();
+      ui.showSection('seal');
+    } catch(e) {
+      ui.clear();
+      ui.display(`<span class="fail">Could not prepare seal: ${e.message}</span>`);
     }
   },
 
@@ -1973,26 +2066,35 @@ const app = {
     if (!list) return;
     const artifacts = (await db.getAll('artifacts')).sort((a, b) => b.created.localeCompare(a.created));
     if (!artifacts.length) {
-      list.innerHTML = '<div class="empty-state"><p>No signed documents yet.</p></div>';
+      list.innerHTML = '<div class="empty-state"><p>No documents yet.</p></div>';
       return;
     }
+    const myKeys = await db.getAll('my_keys');
+    const keyMap = new Map(myKeys.map(k => [k.id, k]));
     list.innerHTML = '';
     for (const a of artifacts) {
       const div = document.createElement('div');
       div.className = 'key-card';
-      const date    = new Date(a.created).toLocaleString();
-      const encBadge = a.encrypted ? '<span class="badge badge-primary" style="margin-left:6px">Encrypted</span>' : '';
-      const dirLabel = a.direction === 'sent' ? 'Signed' : 'Received';
+      const date   = new Date(a.created).toLocaleString();
+      const sigKey = keyMap.get(a.signed_by_key_id);
+      const sigLabel = sigKey
+        ? `${sigKey.name} <span class="mono" style="font-size:11px">${a.fingerprint}</span>`
+        : `<span class="mono" style="font-size:11px">${a.fingerprint}</span>`;
+      const sealBadge = a.encrypted
+        ? '<span class="badge badge-primary" style="margin-left:6px">Sealed</span>'
+        : '<span class="badge" style="margin-left:6px">Open</span>';
+      const canSeal = !a.encrypted && a.signed_by_key_id && a.manifest_hash;
       div.innerHTML = `
         <div class="key-card-header" style="align-items:flex-start">
           <div class="key-card-meta" style="flex:1">
-            <div class="key-name">${dirLabel}${encBadge}</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:2px">${date}</div>
-            <div style="font-size:12px;margin-top:4px;color:var(--text-muted)">${a.summary || '—'}</div>
-            <div class="key-fp" style="margin-top:4px">${a.fingerprint}</div>
+            <div style="font-size:12px;color:var(--text-muted)">${date}</div>
+            <div style="font-size:14px;font-weight:500;margin-top:4px">${a.summary || '—'}</div>
+            <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Signed by ${sigLabel}${sealBadge}</div>
           </div>
         </div>
         <div class="key-card-actions">
+          <button class="btn-secondary" onclick="app.sendArtifact('${a.id}')">Send</button>
+          ${canSeal ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${a.id}')">Seal</button>` : ''}
           <button class="btn-secondary" style="color:var(--danger)" onclick="app.deleteDoc('${a.id}')">Delete</button>
         </div>`;
       list.appendChild(div);
