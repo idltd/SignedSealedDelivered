@@ -174,16 +174,19 @@
 
   <!-- COMPOSE -->
   <section id="compose" class="section">
-    <h2>Sign Document</h2>
+    <h2 id="compose-heading">New Document</h2>
     <div class="form-group">
       <label>Signing Key</label>
       <select id="compose-key-select"></select>
     </div>
     <div class="form-group">
       <label>Document Text</label>
-      <textarea id="compose-text" placeholder="Enter the plain-text document to sign…"></textarea>
+      <textarea id="compose-text" placeholder="Write your document here…"></textarea>
     </div>
-    <button onclick="app.previewSign()">Review →</button>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button onclick="app.previewSign()">Review →</button>
+      <button class="btn-secondary" onclick="app.saveDraft()">Save</button>
+    </div>
   </section>
 
   <!-- SIGN CONFIRMATION -->
@@ -245,7 +248,7 @@
   <section id="docs" class="section active">
     <h2>Documents</h2>
     <div class="section-actions" style="margin-bottom:20px">
-      <button onclick="ui.showSection('compose')">Sign a document</button>
+      <button onclick="app.newDocument()">New document</button>
       <button class="btn-secondary" onclick="ui.showSection('verify')">Open a document</button>
     </div>
     <div id="docs-list"></div>
@@ -431,7 +434,7 @@ const db = {
   async init() {
     if (this._db) return this._db;
     return new Promise((resolve, reject) => {
-      const req = indexedDB.open(MOCK_MODE ? MOCK_DB : 'ssd-keyring', 4);
+      const req = indexedDB.open(MOCK_MODE ? MOCK_DB : 'ssd-keyring', 5);
       req.onupgradeneeded = e => {
         const idb = e.target.result;
         const tx  = e.target.transaction;
@@ -456,6 +459,10 @@ const db = {
 
         if (e.oldVersion < 4) {
           idb.createObjectStore('encryption_keys', { keyPath: 'pub' });
+        }
+
+        if (e.oldVersion < 5) {
+          idb.createObjectStore('drafts', { keyPath: 'id' });
         }
 
         if (e.oldVersion < 2) {
@@ -1368,6 +1375,10 @@ const app = {
       const outerSig  = await cryptoOps.sign(privateKey, enc.encode(outerMeta));
 
       this._sigCtx = { ...this._sigCtx, innerZip, outerSig, outerMeta, manifestHash };
+      if (this._editingDraftId) {
+        await db.del('drafts', this._editingDraftId);
+        this._editingDraftId = null;
+      }
       ui.clear();
       ui.showSection('seal');
 
@@ -1381,6 +1392,47 @@ const app = {
   cancelSeal() {
     this._sigCtx = null;
     ui.showSection('compose');
+  },
+
+  newDocument() {
+    this._editingDraftId = null;
+    document.getElementById('compose-text').value = '';
+    document.getElementById('compose-heading').textContent = 'New Document';
+    ui.showSection('compose');
+  },
+
+  async saveDraft() {
+    const text = document.getElementById('compose-text').value.trim();
+    if (!text) { ui.display('<span class="warn">Nothing to save.</span>'); return; }
+    const now = new Date().toISOString();
+    if (this._editingDraftId) {
+      const existing = await db.get('drafts', this._editingDraftId);
+      if (existing) {
+        await db.put('drafts', { ...existing, text, summary: text.slice(0, 80), updated: now });
+        ui.showSection('docs');
+        return;
+      }
+    }
+    const id = crypto.randomUUID();
+    await db.put('drafts', { id, text, summary: text.slice(0, 80), created: now, updated: now });
+    this._editingDraftId = id;
+    ui.showSection('docs');
+  },
+
+  async signDraft(id) {
+    const draft = await db.get('drafts', id);
+    if (!draft) return;
+    this._editingDraftId = id;
+    document.getElementById('compose-text').value = draft.text;
+    document.getElementById('compose-heading').textContent = 'Sign Document';
+    ui.showSection('compose');
+  },
+
+  async deleteDraft(id) {
+    if (!confirm('Delete this draft? It cannot be recovered.')) return;
+    await db.del('drafts', id);
+    if (this._editingDraftId === id) this._editingDraftId = null;
+    await this.loadDocs();
   },
 
   async doDeliver() {
@@ -2064,39 +2116,68 @@ const app = {
   async loadDocs() {
     const list = document.getElementById('docs-list');
     if (!list) return;
-    const artifacts = (await db.getAll('artifacts')).sort((a, b) => b.created.localeCompare(a.created));
-    if (!artifacts.length) {
+    const [artifacts, drafts, myKeys] = await Promise.all([
+      db.getAll('artifacts'), db.getAll('drafts'), db.getAll('my_keys'),
+    ]);
+    const keyMap = new Map(myKeys.map(k => [k.id, k]));
+
+    // Merge and sort newest first — drafts use 'updated', artifacts use 'created'
+    const items = [
+      ...drafts.map(d => ({ ...d, _type: 'draft', _date: d.updated })),
+      ...artifacts.map(a => ({ ...a, _type: 'artifact', _date: a.created })),
+    ].sort((a, b) => b._date.localeCompare(a._date));
+
+    if (!items.length) {
       list.innerHTML = '<div class="empty-state"><p>No documents yet.</p></div>';
       return;
     }
-    const myKeys = await db.getAll('my_keys');
-    const keyMap = new Map(myKeys.map(k => [k.id, k]));
+
     list.innerHTML = '';
-    for (const a of artifacts) {
+    for (const item of items) {
       const div = document.createElement('div');
       div.className = 'key-card';
-      const date   = new Date(a.created).toLocaleString();
-      const sigKey = keyMap.get(a.signed_by_key_id);
-      const sigLabel = sigKey
-        ? `${sigKey.name} <span class="mono" style="font-size:11px">${a.fingerprint}</span>`
-        : `<span class="mono" style="font-size:11px">${a.fingerprint}</span>`;
-      const sealBadge = a.encrypted
-        ? '<span class="badge badge-primary" style="margin-left:6px">Sealed</span>'
-        : '<span class="badge" style="margin-left:6px">Open</span>';
-      const canSeal = !a.encrypted && a.signed_by_key_id && a.manifest_hash;
-      div.innerHTML = `
-        <div class="key-card-header" style="align-items:flex-start">
-          <div class="key-card-meta" style="flex:1">
-            <div style="font-size:12px;color:var(--text-muted)">${date}</div>
-            <div style="font-size:14px;font-weight:500;margin-top:4px">${a.summary || '—'}</div>
-            <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Signed by ${sigLabel}${sealBadge}</div>
+      const date = new Date(item._date).toLocaleString();
+
+      if (item._type === 'draft') {
+        div.innerHTML = `
+          <div class="key-card-header" style="align-items:flex-start">
+            <div class="key-card-meta" style="flex:1">
+              <div style="font-size:12px;color:var(--text-muted)">${date}</div>
+              <div style="font-size:14px;font-weight:500;margin-top:4px">${item.summary || '—'}</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:6px"><span class="badge">Draft</span></div>
+            </div>
           </div>
-        </div>
-        <div class="key-card-actions">
-          <button class="btn-secondary" onclick="app.sendArtifact('${a.id}')">Send</button>
-          ${canSeal ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${a.id}')">Seal</button>` : ''}
-          <button class="btn-secondary" style="color:var(--danger)" onclick="app.deleteDoc('${a.id}')">Delete</button>
-        </div>`;
+          <div class="key-card-actions">
+            <button onclick="app.signDraft('${item.id}')">Sign</button>
+            <button class="btn-secondary" style="color:var(--danger)" onclick="app.deleteDraft('${item.id}')">Delete</button>
+          </div>`;
+      } else {
+        const sigKey = keyMap.get(item.signed_by_key_id);
+        const sigLabel = sigKey
+          ? `${sigKey.name} <span class="mono" style="font-size:11px">${item.fingerprint}</span>`
+          : `<span class="mono" style="font-size:11px">${item.fingerprint}</span>`;
+        const sealBadge = item.encrypted
+          ? '<span class="badge badge-primary" style="margin-left:6px">Sealed</span>'
+          : '<span class="badge" style="margin-left:6px">Open</span>';
+        const sealAction = item.encrypted
+          ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${item.id}')">Reseal</button>`
+          : item.manifest_hash
+            ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${item.id}')">Seal</button>`
+            : '';
+        div.innerHTML = `
+          <div class="key-card-header" style="align-items:flex-start">
+            <div class="key-card-meta" style="flex:1">
+              <div style="font-size:12px;color:var(--text-muted)">${date}</div>
+              <div style="font-size:14px;font-weight:500;margin-top:4px">${item.summary || '—'}</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-top:6px">Signed by ${sigLabel}${sealBadge}</div>
+            </div>
+          </div>
+          <div class="key-card-actions">
+            ${sealAction}
+            <button class="btn-secondary" onclick="app.sendArtifact('${item.id}')">Send</button>
+            <button class="btn-secondary" style="color:var(--danger)" onclick="app.deleteDoc('${item.id}')">Delete</button>
+          </div>`;
+      }
       list.appendChild(div);
     }
   },
