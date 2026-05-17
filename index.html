@@ -422,7 +422,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v35';
+const APP_VERSION = 'ssd-v36';
 const MOCK_MODE = new URLSearchParams(location.search).has('mock');
 const MOCK_DB   = MOCK_MODE ? `ssd-keyring-mock-${crypto.randomUUID().slice(0,8)}` : null;
 
@@ -1567,17 +1567,43 @@ const app = {
     try {
       const a = await db.get('artifacts', id);
       if (!a) return;
-      if (a.encrypted) { ui.display('<span class="warn">Already sealed.</span>'); return; }
-      if (!a.manifest_hash) { ui.display('<span class="warn">This document is missing metadata needed to re-seal. Re-sign it to enable sealing.</span>'); return; }
       ui.display('Unlocking — confirm with your passkey…');
-      const innerZip = await opfsStore.read(a.opfs_path);
       await keyring.ensureUnlocked();
+
+      let innerZip;
+      let manifestHash = a.manifest_hash;
+      const rawBytes = await opfsStore.read(a.opfs_path);
+
+      if (a.encrypted) {
+        // Decrypt to recover innerZip
+        const envelope = JSON.parse(new TextDecoder().decode(rawBytes));
+        const myEncKeys = await db.getAll('encryption_keys');
+        const slot = envelope.recipients?.find(r => myEncKeys.some(k => k.pub === r.for_key));
+        if (!slot) { ui.display('<span class="warn">This document is sealed for different recipients — cannot reseal from here.</span>'); return; }
+        const myPriv   = await keyring.getEncryptionPrivateKey(slot.for_key);
+        const dekBytes = await cryptoOps.unwrapDEK(slot, myPriv);
+        const dekKey   = await cryptoOps.importAESKey(dekBytes);
+        innerZip = await cryptoOps.decryptBytes(envelope.iv, envelope.ct, dekKey);
+        if (!manifestHash) manifestHash = envelope.manifest_hash;
+      } else {
+        innerZip = rawBytes;
+        // Extract manifest_hash from signature.json inside the ZIP if missing from DB
+        if (!manifestHash) {
+          const unzipped = fflate.unzipSync(innerZip);
+          const sigJson = JSON.parse(new TextDecoder().decode(unzipped['signature.json']));
+          manifestHash = sigJson.manifest_hash;
+          if (manifestHash) await db.put('artifacts', { ...a, manifest_hash: manifestHash });
+        }
+      }
+
+      if (!manifestHash) { ui.display('<span class="warn">Cannot seal — document is missing a manifest hash. Re-sign it to enable sealing.</span>'); return; }
+
       const privateKey = await keyring.getPrivateKey(a.signed_by_key_id);
       const enc = new TextEncoder();
-      const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: a.created, signer_fingerprint: a.fingerprint, manifest_hash: a.manifest_hash });
+      const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: a.created, signer_fingerprint: a.fingerprint, manifest_hash: manifestHash });
       const outerSig  = await cryptoOps.sign(privateKey, enc.encode(outerMeta));
       const rec = await db.get('my_keys', a.signed_by_key_id);
-      this._sigCtx = { keyId: a.signed_by_key_id, wrapped: a.summary || '', timestamp: a.created, render: null, rec, innerZip, outerSig, outerMeta, manifestHash: a.manifest_hash };
+      this._sigCtx = { keyId: a.signed_by_key_id, wrapped: a.summary || '', timestamp: a.created, render: null, rec, innerZip, outerSig, outerMeta, manifestHash };
       ui.clear();
       ui.showSection('seal');
     } catch(e) {
@@ -2159,11 +2185,11 @@ const app = {
         const sealBadge = item.encrypted
           ? '<span class="badge badge-primary" style="margin-left:6px">Sealed</span>'
           : '<span class="badge" style="margin-left:6px">Open</span>';
-        const sealAction = item.encrypted
-          ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${item.id}')">Reseal</button>`
-          : item.manifest_hash
-            ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${item.id}')">Seal</button>`
-            : '';
+        const sealAction = item.signed_by_key_id
+          ? item.encrypted
+            ? `<button class="btn-secondary" onclick="app.sealExistingArtifact('${item.id}')">Reseal</button>`
+            : `<button class="btn-secondary" onclick="app.sealExistingArtifact('${item.id}')">Seal</button>`
+          : '';
         div.innerHTML = `
           <div class="key-card-header" style="align-items:flex-start">
             <div class="key-card-meta" style="flex:1">
