@@ -4,13 +4,16 @@ A cryptographic document signing and verification tool that runs entirely in the
 
 ## Current State
 
-Core signing loop, key exchange, and multi-recipient encryption are all complete (v32).
+All core phases complete (v36). The app covers the full Sign → Seal → Deliver workflow.
 
 - **Passkey registration** — WebAuthn with PRF extension for keyring encryption
 - **Ed25519 keypair generation** — keys stored in IndexedDB with AES-256-GCM-encrypted private keys
 - **Identicon rendering** — deterministic 5×5 pixel grid (`ssd-identicon-1.0`) from SHA-256 of public key
 - **Key card export** — self-signed JSON, verifiable without the app
+- **Drafts** — compose and save documents before signing
 - **Document signing** — compose → canonical render → explicit biometric confirmation → `.sealed` artifact
+- **Seal / Reseal** — seal signed documents; re-seal encrypted documents after decryption
+- **Deliver** — send sealed artifacts directly from the Documents list
 - **Verification** — drag-and-drop `.sealed` files, checks hashes and Ed25519 signature
 - **Contact keyring** — import contacts via QR or paste, quarantine management
 - **Encryption** — encrypt artifacts to one or more recipients by public key
