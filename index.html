@@ -407,7 +407,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v39';
+const APP_VERSION = 'ssd-v40';
 const MOCK_MODE = new URLSearchParams(location.search).has('mock');
 const MOCK_DB   = MOCK_MODE ? `ssd-keyring-mock-${crypto.randomUUID().slice(0,8)}` : null;
 
@@ -935,15 +935,83 @@ const signer = {
   },
 };
 
+// ─── RENDER ENGINES ──────────────────────────────────────────────────────────
+function _canonicalJSON(v) {
+  if (Array.isArray(v)) return '[' + v.map(_canonicalJSON).join(',') + ']';
+  if (v !== null && typeof v === 'object') {
+    return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + _canonicalJSON(v[k])).join(',') + '}';
+  }
+  return JSON.stringify(v);
+}
+
+const renderEngines = {
+  'ssd-render-1.0': {
+    pack({ source, render }) {
+      return {
+        'source.txt': fflate.strToU8(source),
+        'render.txt': fflate.strToU8(render),
+      };
+    },
+    unpack(files) {
+      for (const f of ['source.txt', 'render.txt'])
+        if (!files[f]) throw new Error(`Missing ${f} in archive.`);
+      return {
+        source: fflate.strFromU8(files['source.txt']),
+        render: fflate.strFromU8(files['render.txt']),
+      };
+    },
+    hashTargets({ source, render }) {
+      const enc = new TextEncoder();
+      return { 'source.txt': enc.encode(source), 'render.txt': enc.encode(render) };
+    },
+    toElement({ render }) {
+      const pre = document.createElement('pre');
+      pre.className = 'render-preview';
+      pre.textContent = render;
+      return pre;
+    },
+  },
+
+  'ssd-json-1.0': {
+    pack({ data }) {
+      const canonical = _canonicalJSON(data);
+      const pretty    = JSON.stringify(data, null, 2);
+      return {
+        'source.json': fflate.strToU8(canonical),
+        'render.json': fflate.strToU8(pretty),
+      };
+    },
+    unpack(files) {
+      for (const f of ['source.json', 'render.json'])
+        if (!files[f]) throw new Error(`Missing ${f} in archive.`);
+      return {
+        source: fflate.strFromU8(files['source.json']),
+        render: fflate.strFromU8(files['render.json']),
+        data:   JSON.parse(fflate.strFromU8(files['source.json'])),
+      };
+    },
+    hashTargets({ source, render }) {
+      const enc = new TextEncoder();
+      return { 'source.json': enc.encode(source), 'render.json': enc.encode(render) };
+    },
+    toElement({ render }) {
+      const pre = document.createElement('pre');
+      pre.className = 'render-preview';
+      pre.textContent = render;
+      return pre;
+    },
+  },
+};
+
 // ─── ARTIFACT ────────────────────────────────────────────────────────────────
 const artifact = {
-  async pack(sourceText, renderText, manifestObj, signatureObj) {
-    const enc = new TextEncoder();
+  async pack(content, engineSpec, manifestObj, signatureObj) {
+    const engine = renderEngines[engineSpec];
+    if (!engine) throw new Error(`Unknown render spec: ${engineSpec}`);
     return fflate.zipSync({
-      'manifest.json': fflate.strToU8(JSON.stringify(manifestObj, null, 2)),
-      'source.txt':    fflate.strToU8(sourceText),
-      'render.txt':    fflate.strToU8(renderText),
+      'manifest.json':  fflate.strToU8(JSON.stringify(manifestObj, null, 2)),
       'signature.json': fflate.strToU8(JSON.stringify(signatureObj, null, 2)),
+      ...engine.pack(content),
     });
   },
 
@@ -951,18 +1019,18 @@ const artifact = {
     let files;
     try { files = fflate.unzipSync(sealedBytes); }
     catch { throw new Error('File is not a valid .sealed archive.'); }
-    const need = ['manifest.json', 'source.txt', 'render.txt', 'signature.json'];
-    for (const f of need) if (!files[f]) throw new Error(`Missing ${f} in archive.`);
-    return {
-      manifest:  JSON.parse(fflate.strFromU8(files['manifest.json'])),
-      source:    fflate.strFromU8(files['source.txt']),
-      render:    fflate.strFromU8(files['render.txt']),
-      signature: JSON.parse(fflate.strFromU8(files['signature.json'])),
-    };
+    for (const f of ['manifest.json', 'signature.json'])
+      if (!files[f]) throw new Error(`Missing ${f} in archive.`);
+    const manifest  = JSON.parse(fflate.strFromU8(files['manifest.json']));
+    const signature = JSON.parse(fflate.strFromU8(files['signature.json']));
+    const engine = renderEngines[manifest.render_spec];
+    if (!engine) throw new Error(`Unknown render spec: ${manifest.render_spec}`);
+    const content = engine.unpack(files);
+    return { manifest, content, signature, engine };
   },
 
   async verify(unpacked) {
-    const { manifest, source, render, signature } = unpacked;
+    const { manifest, content, signature, engine } = unpacked;
     const enc = new TextEncoder();
     const result = {
       signature_valid: false, content_unmodified: false,
@@ -973,11 +1041,12 @@ const artifact = {
       errors: [], warnings: [],
     };
 
-    // Verify content hashes
-    const srcHash = 'sha256:' + await cryptoOps.sha256(enc.encode(source));
-    const renHash = 'sha256:' + await cryptoOps.sha256(enc.encode(render));
-    if (srcHash !== manifest.files?.['source.txt']) result.errors.push('source.txt hash mismatch — content modified.');
-    if (renHash !== manifest.files?.['render.txt']) result.errors.push('render.txt hash mismatch — content modified.');
+    // Verify content hashes via engine
+    for (const [filename, bytes] of Object.entries(engine.hashTargets(content))) {
+      const hash = 'sha256:' + await cryptoOps.sha256(bytes);
+      if (hash !== manifest.files?.[filename])
+        result.errors.push(`${filename} hash mismatch — content modified.`);
+    }
     result.content_unmodified = result.errors.length === 0;
 
     // Verify signature
@@ -1348,15 +1417,18 @@ const app = {
     try {
       await keyring.unlock();
 
-      const enc = new TextEncoder();
-      const srcHash = 'sha256:' + await cryptoOps.sha256(enc.encode(wrapped));
-      const renHash = 'sha256:' + await cryptoOps.sha256(enc.encode(render));
+      const enc    = new TextEncoder();
+      const engine = renderEngines['ssd-render-1.0'];
+      const content = { source: wrapped, render };
+      const files  = {};
+      for (const [name, bytes] of Object.entries(engine.hashTargets(content)))
+        files[name] = 'sha256:' + await cryptoOps.sha256(bytes);
 
       const manifestObj = {
         version: '1.0', render_spec: 'ssd-render-1.0',
         signed_at: timestamp,
         signer_fingerprint: rec.fingerprint, signer_name: rec.name,
-        files: { 'source.txt': srcHash, 'render.txt': renHash },
+        files,
       };
       const manifestBytes = enc.encode(JSON.stringify(manifestObj, null, 2));
       const privateKey    = await keyring.getPrivateKey(keyId);
@@ -1367,7 +1439,7 @@ const app = {
         algorithm: 'Ed25519', signer_fingerprint: rec.fingerprint,
         signed_at: timestamp, manifest_hash: manifestHash, signature,
       };
-      const innerZip  = await artifact.pack(wrapped, render, manifestObj, signatureObj);
+      const innerZip  = await artifact.pack(content, 'ssd-render-1.0', manifestObj, signatureObj);
       const outerMeta = JSON.stringify({ ssd: 'sealed-enc-v1', signed_at: timestamp, signer_fingerprint: rec.fingerprint, manifest_hash: manifestHash });
       const outerSig  = await cryptoOps.sign(privateKey, enc.encode(outerMeta));
 
@@ -1683,10 +1755,7 @@ const app = {
       }
 
       ui.display('<strong>Rendered document:</strong>');
-      const pre = document.createElement('pre');
-      pre.className = 'render-preview';
-      pre.textContent = unpacked.render;
-      document.getElementById('results').appendChild(pre);
+      document.getElementById('results').appendChild(unpacked.engine.toElement(unpacked.content));
       ui.displayVerification(result);
     } catch (e) {
       ui.clear();
