@@ -374,6 +374,16 @@
     </div>
   </div>
 
+  <!-- SEALED RECIPIENTS MODAL -->
+  <div id="recipients-modal" class="modal-overlay" style="display:none">
+    <div class="modal-backdrop" onclick="app.closeRecipientsModal()"></div>
+    <div class="modal-box">
+      <h3>Sealed for</h3>
+      <div id="recipients-modal-list" style="margin:12px 0"></div>
+      <button class="btn-secondary" onclick="app.closeRecipientsModal()">Close</button>
+    </div>
+  </div>
+
   <!-- QR SCAN MODAL -->
   <div id="scan-modal" class="modal-overlay" style="display:none">
     <div class="modal-backdrop"></div>
@@ -407,7 +417,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v40';
+const APP_VERSION = 'ssd-v41';
 const MOCK_MODE = new URLSearchParams(location.search).has('mock');
 const MOCK_DB   = MOCK_MODE ? `ssd-keyring-mock-${crypto.randomUUID().slice(0,8)}` : null;
 
@@ -1522,6 +1532,7 @@ const app = {
           if (id === '__self__') {
             if (!myEncSetting) throw new Error('No encryption key — generate one in Me → Passkey & Devices.');
             recipientPubs.push({ id: '__self__', pub: myEncSetting.value });
+            encryptedFor.push('__self__');
           } else {
             const person = await db.get('contacts', id);
             if (!person?.encryption_key_pub) throw new Error(`${person?.local_name || id} has no encryption key.`);
@@ -2001,7 +2012,7 @@ const app = {
           ? `${sigKey.name} <span class="mono" style="font-size:11px">${item.fingerprint}</span>`
           : `<span class="mono" style="font-size:11px">${item.fingerprint}</span>`;
         const sealBadge = item.encrypted
-          ? '<span class="badge badge-primary" style="margin-left:6px">Sealed</span>'
+          ? `<span class="badge badge-primary" style="margin-left:6px;cursor:pointer" onclick="app.showSealedRecipients('${item.id}')">Sealed ▾</span>`
           : '<span class="badge" style="margin-left:6px">Open</span>';
         const sealAction = item.signed_by_key_id
           ? item.encrypted
@@ -2024,6 +2035,28 @@ const app = {
       }
       list.appendChild(div);
     }
+  },
+
+  async showSealedRecipients(id) {
+    const a = await db.get('artifacts', id);
+    if (!a) return;
+    const list = document.getElementById('recipients-modal-list');
+    if (!a.encrypted_for?.length) {
+      list.innerHTML = '<p class="muted">Recipient list not recorded (document sealed before v41).</p>';
+    } else {
+      const contacts = await db.getAll('contacts');
+      const contactMap = new Map(contacts.map(c => [c.id, c.local_name]));
+      const items = a.encrypted_for.map(id => {
+        const name = id === '__self__' ? 'Yourself (this device)' : (contactMap.get(id) || id);
+        return `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px">${name}</div>`;
+      });
+      list.innerHTML = items.join('');
+    }
+    document.getElementById('recipients-modal').style.display = 'flex';
+  },
+
+  closeRecipientsModal() {
+    document.getElementById('recipients-modal').style.display = 'none';
   },
 
   async deleteDoc(id) {
