@@ -353,7 +353,8 @@
       </div>
     </div>
     <div id="person-picker" class="person-picker" style="display:none">
-      <h3 style="margin-bottom:12px;font-size:13px">Who is this key from?</h3>
+      <h3 style="margin-bottom:4px;font-size:13px">Who is this key from?</h3>
+      <div id="person-picker-key-info" style="font-size:12px;color:var(--text-muted);margin-bottom:12px"></div>
       <div id="person-picker-existing" style="display:none">
         <div class="form-group">
           <label>Link to existing contact</label>
@@ -428,7 +429,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v37';
+const APP_VERSION = 'ssd-v38';
 const MOCK_MODE = new URLSearchParams(location.search).has('mock');
 const MOCK_DB   = MOCK_MODE ? `ssd-keyring-mock-${crypto.randomUUID().slice(0,8)}` : null;
 
@@ -1324,6 +1325,7 @@ const app = {
         <button class="btn-secondary" onclick="app.startSign('${rec.id}')">Sign Document</button>
         <button class="btn-secondary" onclick="app.showKeyCardQR('${rec.id}')">Show QR</button>
         <button class="btn-secondary" onclick="app.validateKey('${rec.id}')">Validate</button>
+        <button class="btn-danger" onclick="app.deleteKey('${rec.id}')">Delete</button>
       </div>`;
     return div;
   },
@@ -1762,6 +1764,25 @@ const app = {
       ui.display(`<span class="fail">Key creation failed: ${e.message}</span>`);
       console.error(e);
     }
+  },
+
+  async deleteKey(keyId) {
+    const rec = await db.get('my_keys', keyId);
+    if (!rec) return;
+    const keys = await db.getAll('my_keys');
+    const isDefault = rec.is_default;
+    const isOnly = keys.length === 1;
+    let warning = `Delete "${rec.name}"?\n\nThis permanently removes the private key from this device. Any documents signed with it can still be verified using the public key, but you will no longer be able to sign new documents with it.`;
+    if (isOnly) warning += '\n\nThis is your only key — you will need to create a new one to sign documents.';
+    if (isDefault && !isOnly) warning += '\n\nThis is your default key. Another key will become the default.';
+    if (!confirm(warning)) return;
+    await db.del('my_keys', keyId);
+    if (isDefault && !isOnly) {
+      const remaining = await db.getAll('my_keys');
+      if (remaining.length) await db.put('my_keys', { ...remaining[0], is_default: true });
+    }
+    ui.display(`<div class="ok">Key "${rec.name}" deleted.</div>`);
+    await this.loadKeyring();
   },
 
   async doExportKeyCard(keyId) {
@@ -2417,8 +2438,10 @@ const app = {
     sel.innerHTML = '<option value="">— Add as new person —</option>';
     persons.forEach(p => sel.appendChild(Object.assign(document.createElement('option'), { value: p.id, textContent: p.local_name })));
     if (existingGroup) existingGroup.style.display = persons.length ? '' : 'none';
-    nameInput.value = card.name;
+    nameInput.value = card.deviceName || card.name;
     nameLabel.textContent = persons.length ? 'Or create new person' : 'Their name';
+    const keyInfoEl = document.getElementById('person-picker-key-info');
+    if (keyInfoEl) keyInfoEl.textContent = card.deviceName ? `Key: ${card.name}` : '';
     document.getElementById('person-picker').style.display = '';
     nameInput.focus();
   },
@@ -2481,8 +2504,10 @@ const app = {
     try {
       await keyring.ensureUnlocked();
       const card = await keyring.exportKeyCard(keyId);
+      const deviceNameSetting = await db.get('settings', 'my_device_name');
+      const deviceName = deviceNameSetting ? deviceNameSetting.value : null;
 
-      const qrPayload = JSON.stringify({ ssd: 'qr1', n: card.name, k: card.public_key, ...(card.encryption_key ? { ek: card.encryption_key } : {}) });
+      const qrPayload = JSON.stringify({ ssd: 'qr1', n: card.name, k: card.public_key, ...(card.encryption_key ? { ek: card.encryption_key } : {}), ...(deviceName ? { dn: deviceName } : {}) });
       log('QR payload bytes:', qrPayload.length);
       await this._showQRModal('Your key card', `Share this so contacts can verify your identity. Fingerprint: ${card.fingerprint}`, qrPayload, null);
     } catch(e) {
@@ -2782,7 +2807,6 @@ const app = {
 
   stopQRScan() {
     this._scanRunning = false;
-    this._scanCallback = null;
     this._barcodeDetector = null;
     if (this._scanStream) { this._scanStream.getTracks().forEach(t => t.stop()); this._scanStream = null; }
     const modal = document.getElementById('scan-modal');
@@ -2806,9 +2830,9 @@ const app = {
       ui.display('<span class="fail">QR code is not a valid key card.</span>');
       return;
     }
-    // Compact QR format: {ssd:'qr1', n:name, k:public_key, ek?:encryption_key}
+    // Compact QR format: {ssd:'qr1', n:key_name, k:public_key, ek?:encryption_key, dn?:device_name}
     if (card.ssd === 'qr1') {
-      card = { name: card.n, public_key: card.k, ...(card.ek ? { encryption_key: card.ek } : {}) };
+      card = { name: card.n, public_key: card.k, ...(card.ek ? { encryption_key: card.ek } : {}), ...(card.dn ? { deviceName: card.dn } : {}) };
     }
     ui.showSection('contacts');
     await this.importContactCard(card, 'qr_scan');
