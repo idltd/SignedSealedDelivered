@@ -306,8 +306,8 @@
       <div id="sync-key-status" style="font-size:13px;margin-bottom:12px;padding:8px 12px;border-radius:var(--radius);background:var(--surface-2)">Checking…</div>
       <div id="sync-key-actions" style="display:none;margin-bottom:16px">
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn-secondary" onclick="app.showPairingQR()">Show pairing QR</button>
-          <button class="btn-secondary" onclick="app.scanPairingQR()">Pair with a device</button>
+          <button class="btn-secondary" onclick="app.showPairingQR()">Show master QR code</button>
+          <button class="btn-secondary" onclick="app.scanPairingQR()">Scan master QR code</button>
         </div>
       </div>
       <div id="sync-key-generate-ui" style="display:none;margin-bottom:12px">
@@ -429,7 +429,7 @@
 'use strict';
 
 // Must match CACHE_NAME in service-worker.js
-const APP_VERSION = 'ssd-v38';
+const APP_VERSION = 'ssd-v39';
 const MOCK_MODE = new URLSearchParams(location.search).has('mock');
 const MOCK_DB   = MOCK_MODE ? `ssd-keyring-mock-${crypto.randomUUID().slice(0,8)}` : null;
 
@@ -1897,6 +1897,10 @@ const app = {
     const list = document.getElementById('paired-devices-list');
     if (!list) return;
     if (devices.length === 0) { list.innerHTML = ''; return; }
+    const hasKeys = (await db.getAll('my_keys')).length > 0;
+    const sendBtn = hasKeys
+      ? (id) => `<button onclick="app.sendSyncTo('${id}')">Send keyring</button>`
+      : () => '';
     list.innerHTML = '<h3 style="margin-bottom:8px">Paired devices</h3>' + devices.map(d => `
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
         <div>
@@ -1904,7 +1908,7 @@ const app = {
           <div style="font-size:11px;color:var(--text-muted)" class="mono">${d.fingerprint}</div>
         </div>
         <div style="display:flex;gap:6px">
-          <button onclick="app.sendSyncTo('${d.id}')">Send keyring</button>
+          ${sendBtn(d.id)}
           <button class="btn-danger" style="font-size:11px;padding:4px 10px" onclick="app.removePairedDevice('${d.id}')">Remove</button>
         </div>
       </div>`).join('');
