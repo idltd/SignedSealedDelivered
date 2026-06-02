@@ -26,8 +26,8 @@ Each browser instance manages its own keyring, protected by a passkey (WebAuthn 
 
 | Format | Meaning | Example |
 |--------|---------|---------|
-| `D:name` | Device key — for this browser/device | `D:Paul's iPhone` |
-| `O:name` | Owner key — personal identity across devices | `O:Paul` |
+| `D:name` | Device key — for this browser/device | `D:Alice's iPhone` |
+| `O:name` | Owner key — personal identity across devices | `O:Alice` |
 | (plain) | Legacy or manually named key | `Work` |
 
 The keyring displays a **Device** or **Owner** badge based on the prefix.
